@@ -21,6 +21,7 @@ from datetime import datetime
 from src.pipeline.pull_matchups import pull_round_matchups, pull_3balls
 from src.core.edge import calculate_matchup_edges, calculate_3ball_edges
 from src.core.devig import american_to_decimal, decimal_to_american
+from src.normalize.players import resolve_candidates
 from src.db import supabase_client as db
 import config
 
@@ -144,8 +145,11 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
             edge=actual_edge,
             stake=stake,
             scanned_odds_decimal=c.best_odds_decimal,
+            player_id=c.player_id,
             opponent_name=c.opponent_name,
+            opponent_id=c.opponent_id,
             opponent_2_name=c.opponent_2_name,
+            opponent_2_id=c.opponent_2_id,
             round_number=c.round_number,
             correlation_haircut=c.correlation_haircut,
             notes=notes,
@@ -179,6 +183,22 @@ def main():
     round_str = f" R{args.round}" if args.round else ""
     print(f"=== Pre-Round Scan{round_str} ({args.tour.upper()}) ===")
     print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+    # Detect active tournament from this week's bets
+    tournament_id = None
+    if existing_bets:
+        # Most recent tournament_id from this week's bets
+        for b in sorted(existing_bets, key=lambda x: x.get("bet_timestamp", ""),
+                        reverse=True):
+            if b.get("tournament_id"):
+                tournament_id = b["tournament_id"]
+                break
+    if tournament_id:
+        t = db.get_tournament_by_id(tournament_id)
+        if t:
+            print(f"Active tournament: {t.get('tournament_name', tournament_id)}")
+    else:
+        print("Warning: No active tournament detected (exposure limits approximate)")
 
     # Pull round matchups
     print("\nPulling round matchups...")
@@ -222,15 +242,20 @@ def main():
 
     all_candidates.sort(key=lambda c: c.edge, reverse=True)
 
+    # Resolve player names to canonical IDs
+    if all_candidates:
+        print("\nResolving player names...")
+        resolve_candidates(all_candidates, source="datagolf")
+
     tournament_exposure = sum(
         b.get("stake", 0) for b in existing_bets
-        if b.get("tournament_id") is not None  # TODO: match actual tournament
-    )
+        if b.get("tournament_id") == tournament_id
+    ) if tournament_id else 0
 
     display_candidates(all_candidates, bankroll, weekly_exposure, tournament_exposure)
 
     if not args.dry_run and all_candidates:
-        interactive_place_bets(all_candidates, None, bankroll)
+        interactive_place_bets(all_candidates, tournament_id, bankroll)
     elif args.dry_run:
         print("\n[DRY RUN — no bets logged]")
 

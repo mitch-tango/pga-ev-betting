@@ -29,6 +29,7 @@ from src.pipeline.pull_outrights import pull_all_outrights
 from src.pipeline.pull_matchups import pull_tournament_matchups
 from src.core.edge import calculate_placement_edges, calculate_matchup_edges
 from src.core.devig import american_to_decimal, decimal_to_american, parse_american_odds
+from src.normalize.players import resolve_candidates
 from src.db import supabase_client as db
 import config
 
@@ -166,8 +167,11 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
             edge=actual_edge,
             stake=stake,
             scanned_odds_decimal=c.best_odds_decimal,
+            player_id=c.player_id,
             opponent_name=c.opponent_name,
+            opponent_id=c.opponent_id,
             opponent_2_name=c.opponent_2_name,
+            opponent_2_id=c.opponent_2_id,
             round_number=c.round_number,
             correlation_haircut=c.correlation_haircut,
             notes=notes,
@@ -239,18 +243,43 @@ def main():
     print(f"  Matchups: {len(matchups)}")
 
     # ---- Detect tournament info ----
-    # Try to determine if this is a signature event from the data
     is_signature = False
     tournament_name = tournament_slug or "Unknown Tournament"
     tournament_id = None
+    dg_event_id = None
 
-    # We need a tournament record in the DB
-    # For now, create/get based on available info
-    if outrights.get("win") and isinstance(outrights["win"], list):
-        first_record = outrights["win"][0] if outrights["win"] else {}
+    # Extract event info from outrights data
+    if outrights.get("win") and isinstance(outrights["win"], list) and outrights["win"]:
+        first_record = outrights["win"][0]
         event_name = first_record.get("event_name", tournament_name)
         if event_name:
             tournament_name = event_name
+        dg_event_id = str(first_record.get("event_id", "")) or None
+
+    # Create/find tournament record in DB
+    season = datetime.now().year
+    if dg_event_id:
+        existing = db.get_tournament(dg_event_id, season)
+        if existing:
+            tournament_id = existing["id"]
+            is_signature = existing.get("is_signature", False)
+            print(f"Tournament: {existing['tournament_name']} (existing record)")
+        else:
+            # Create new tournament — purse defaults to 0, user can update later
+            t = db.upsert_tournament(
+                tournament_name=tournament_name,
+                start_date=datetime.now().strftime("%Y-%m-%d"),
+                purse=0,
+                dg_event_id=dg_event_id,
+                season=season,
+            )
+            tournament_id = t.get("id")
+            print(f"Tournament: {tournament_name} (new record)")
+    else:
+        print(f"Tournament: {tournament_name} (no DG event ID — exposure limits approximate)")
+
+    if is_signature:
+        print(f"  Signature event — using tighter blend weights")
 
     # ---- Calculate Edges ----
     print(f"\nCalculating edges for {tournament_name}...")
@@ -294,6 +323,11 @@ def main():
 
     # Sort all candidates by edge
     all_candidates.sort(key=lambda c: c.edge, reverse=True)
+
+    # Resolve player names to canonical IDs (builds alias table over time)
+    if all_candidates:
+        print("\nResolving player names...")
+        resolve_candidates(all_candidates, source="datagolf")
 
     # Calculate tournament exposure
     tournament_exposure = sum(

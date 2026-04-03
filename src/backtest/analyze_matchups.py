@@ -521,15 +521,85 @@ def run_full_backtest(start_year: int = 2022, end_year: int = 2026) -> dict:
     overall = passed_accuracy and passed_roi
     print(f"\nOVERALL: {'PASS — matchups included in v1' if overall else 'FAIL — re-evaluate matchup strategy'}")
 
-    return {
-        "records": all_records,
+    # Find optimal blend weight (lowest log-loss)
+    best_dg_pct = 100
+    best_ll = float("inf")
+    blend_results = {}
+    for dg_pct_sweep in range(0, 110, 10):
+        dg_w = dg_pct_sweep / 100
+        book_w = 1 - dg_w
+        ll_sum = sum(
+            log_loss(dg_w * r["dg_prob"] + book_w * r["book_prob"], r["p1_outcome"])
+            for r in all_records
+        )
+        avg = ll_sum / total
+        blend_results[dg_pct_sweep] = avg
+        if avg < best_ll:
+            best_ll = avg
+            best_dg_pct = dg_pct_sweep
+
+    print(f"\nOptimal blend weight (min log-loss): {best_dg_pct}% DG / {100 - best_dg_pct}% Books")
+    print(f"Config recommendation: BLEND_WEIGHTS['matchup'] = "
+          f"{{'dg': {best_dg_pct/100:.2f}, 'books': {(100-best_dg_pct)/100:.2f}}}")
+
+    # Per-book softness ranking (which books give us the most edge)
+    print(f"\n{'--- Book Softness (Avg |Edge| when DG disagrees) ---':^60}")
+    book_edge_stats = defaultdict(lambda: {"edge_sum": 0, "n": 0, "bet_n": 0,
+                                            "pnl": 0, "staked": 0})
+    for r in all_records:
+        b = r["book"]
+        edge = abs(r["edge_p1"])
+        book_edge_stats[b]["edge_sum"] += edge
+        book_edge_stats[b]["n"] += 1
+        if edge >= 0.03:
+            book_edge_stats[b]["bet_n"] += 1
+            book_prob = r["book_prob"] if r["edge_p1"] > 0 else 1 - r["book_prob"]
+            dec_odds = 1.0 / book_prob if book_prob > 0 else 100
+            kelly_pct = edge / (dec_odds - 1) if dec_odds > 1 else 0
+            stake = min(1000 * kelly_pct * 0.25, 30)
+            if stake >= 1:
+                book_edge_stats[b]["staked"] += stake
+                won = (r["edge_p1"] > 0 and r["p1_outcome"] == 1.0) or \
+                      (r["edge_p1"] < 0 and r["p1_outcome"] == 0.0)
+                book_edge_stats[b]["pnl"] += stake * (dec_odds - 1) if won else -stake
+
+    print(f"{'Book':<15} {'Matchups':>8} {'Avg Edge':>9} {'Bets 3%+':>9} {'ROI':>8}")
+    for book, stats in sorted(book_edge_stats.items(),
+                               key=lambda x: -x[1]["edge_sum"]/max(x[1]["n"],1)):
+        avg_edge = stats["edge_sum"] / stats["n"] if stats["n"] > 0 else 0
+        roi = (stats["pnl"] / stats["staked"] * 100) if stats["staked"] > 0 else 0
+        print(f"{book:<15} {stats['n']:>8} {avg_edge*100:>8.2f}% {stats['bet_n']:>9} {roi:>7.1f}%")
+
+    # Save summary to disk
+    summary = {
+        "date_range": f"{start_year}-{end_year}",
         "events_processed": events_processed,
-        "dg_win_pct": dg_pct,
-        "avg_dg_ll": avg_dg_ll,
-        "avg_book_ll": avg_book_ll,
-        "sim_roi": sim_roi,
+        "total_records": total,
+        "dg_win_pct": round(dg_pct, 1),
+        "avg_dg_log_loss": round(avg_dg_ll, 6),
+        "avg_book_log_loss": round(avg_book_ll, 6),
+        "dg_advantage": round(avg_book_ll - avg_dg_ll, 6),
+        "optimal_blend_dg_pct": best_dg_pct,
+        "blend_log_losses": {str(k): round(v, 6) for k, v in blend_results.items()},
+        "sim_roi_pct": round(sim_roi, 1),
         "passed": overall,
+        "per_book": {
+            book: {
+                "n": stats["total"],
+                "dg_win_pct": round(100 * stats["dg_wins"] / stats["total"], 1),
+                "avg_dg_ll": round(stats["dg_ll_sum"] / stats["total"], 6),
+                "avg_book_ll": round(stats["book_ll_sum"] / stats["total"], 6),
+            }
+            for book, stats in book_stats.items()
+        },
     }
+
+    out_path = BACKTEST_DIR / "matchup_backtest_results.json"
+    with open(out_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nResults saved to {out_path}")
+
+    return summary
 
 
 if __name__ == "__main__":

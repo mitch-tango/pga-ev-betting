@@ -197,3 +197,59 @@ def bulk_resolve_players(names_with_source: list[dict],
         )
         results[entry["name"]] = player
     return results
+
+
+def resolve_candidates(candidates: list, source: str = "datagolf") -> list:
+    """Resolve player names on a list of CandidateBet objects.
+
+    Sets player_id, opponent_id, opponent_2_id on each candidate
+    by looking up (or creating) canonical player records via the
+    players + player_aliases tables.
+
+    This builds the alias database over time — each new name
+    from a source gets recorded for instant future lookup.
+
+    Args:
+        candidates: list of CandidateBet dataclass instances
+        source: data source for these names (default "datagolf")
+
+    Returns:
+        The same list, mutated with player IDs set.
+    """
+    # Collect unique names to resolve
+    names_to_resolve = {}
+    for c in candidates:
+        key = (c.player_name, c.player_dg_id)
+        if key not in names_to_resolve:
+            names_to_resolve[key] = {"name": c.player_name, "source": source,
+                                      "dg_id": c.player_dg_id}
+        if c.opponent_name:
+            okey = (c.opponent_name, c.opponent_dg_id)
+            if okey not in names_to_resolve:
+                names_to_resolve[okey] = {"name": c.opponent_name, "source": source,
+                                           "dg_id": c.opponent_dg_id}
+        if c.opponent_2_name:
+            o2key = (c.opponent_2_name, c.opponent_2_dg_id)
+            if o2key not in names_to_resolve:
+                names_to_resolve[o2key] = {"name": c.opponent_2_name, "source": source,
+                                            "dg_id": c.opponent_2_dg_id}
+
+    # Resolve all unique names
+    resolved = {}
+    for key, entry in names_to_resolve.items():
+        player = resolve_player(
+            name=entry["name"], source=entry["source"],
+            dg_id=entry.get("dg_id"), auto_create=True,
+        )
+        if player:
+            resolved[key] = player["id"]
+
+    # Assign IDs back to candidates
+    for c in candidates:
+        c.player_id = resolved.get((c.player_name, c.player_dg_id))
+        if c.opponent_name:
+            c.opponent_id = resolved.get((c.opponent_name, c.opponent_dg_id))
+        if c.opponent_2_name:
+            c.opponent_2_id = resolved.get((c.opponent_2_name, c.opponent_2_dg_id))
+
+    return candidates

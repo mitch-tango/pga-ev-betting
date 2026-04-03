@@ -264,6 +264,31 @@ class DataGolfClient:
 
         return result
 
+    # ---- Field / Results ----
+
+    def get_field_updates(self, tour: str = "pga",
+                          tournament_slug: str | None = None) -> dict:
+        """Get current tournament field with positions and round scores.
+
+        After tournament completion, returns final results including:
+        - current_pos: final finish position (e.g., 1, 2, T3)
+        - r1/r2/r3/r4: individual round scores
+        - status: "active", "cut", "wd", "dq"
+        - thru: holes completed ("F" = finished)
+
+        This is the primary endpoint for auto-settling bets.
+        """
+        result = self._api_call("/field-updates", {
+            "tour": tour,
+            "file_format": "json",
+        })
+
+        if result["status"] == "ok" and tournament_slug:
+            self._cache_response(result["data"], "field_updates",
+                                 tournament_slug)
+
+        return result
+
     # ---- Historical Data (for backtesting) ----
 
     def get_historical_outrights(self, event_id: str, year: int,

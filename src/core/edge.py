@@ -36,10 +36,13 @@ class CandidateBet:
     market_type: str
     player_name: str
     player_dg_id: str | None = None
+    player_id: str | None = None  # Supabase players.id (set by resolve step)
     opponent_name: str | None = None
     opponent_dg_id: str | None = None
+    opponent_id: str | None = None
     opponent_2_name: str | None = None
     opponent_2_dg_id: str | None = None
+    opponent_2_id: str | None = None
     round_number: int | None = None
 
     # Probabilities
@@ -87,10 +90,16 @@ class CandidateBet:
             "all_book_odds": self.all_book_odds,
             "status": "pending",
         }
+        if self.player_id:
+            d["player_id"] = self.player_id
         if self.opponent_name:
             d["opponent_name"] = self.opponent_name
+        if self.opponent_id:
+            d["opponent_id"] = self.opponent_id
         if self.opponent_2_name:
             d["opponent_2_name"] = self.opponent_2_name
+        if self.opponent_2_id:
+            d["opponent_2_id"] = self.opponent_2_id
         if self.round_number is not None:
             d["round_number"] = self.round_number
         return d

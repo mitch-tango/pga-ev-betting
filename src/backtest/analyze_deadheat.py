@@ -198,6 +198,9 @@ def analyze_deadheat_from_predictions(start_year: int = 2022,
     print(f"is reduced by approximately the same amount.")
     print()
 
+    import config
+    edge_impacts = {}
+
     for market in ["t5", "t10", "t20"]:
         s = stats[market]
         if s["total_bets"] > 0 and s["reductions"]:
@@ -208,21 +211,141 @@ def analyze_deadheat_from_predictions(start_year: int = 2022,
             all_reductions = [1.0] * non_dh + s["reductions"]
             overall_avg = sum(all_reductions) / len(all_reductions)
             edge_impact = (1.0 - overall_avg) * 100
-
             dh_pct = 100 * s["deadheat_bets"] / s["total_bets"]
+
+            edge_impacts[market] = {
+                "dh_pct": round(dh_pct, 1),
+                "avg_payout_reduction_pct": round(edge_impact, 2),
+            }
+
+            current_threshold = config.MIN_EDGE.get(market, 0.03) * 100
+            recommended = max(current_threshold, edge_impact + 2.0)  # 2% buffer above DH impact
+
             print(f"  {market}: {dh_pct:.1f}% of winning bets face dead-heat")
             print(f"    Avg payout reduction across ALL winners: {edge_impact:.2f}%")
-            print(f"    Effective edge impact: ~{edge_impact:.2f}% "
-                  f"(current 3.0% threshold → {3.0 + edge_impact:.1f}% adjusted)")
+            print(f"    Current threshold: {current_threshold:.0f}%")
+            print(f"    Recommended threshold: {recommended:.0f}% "
+                  f"(DH impact + 2% buffer)")
+
+            edge_impacts[market]["current_threshold_pct"] = current_threshold
+            edge_impacts[market]["recommended_threshold_pct"] = round(recommended, 0)
         else:
             print(f"  {market}: insufficient data")
 
-    return {
+    # Simulated ROI comparison: with vs without dead-heat adjustment
+    print(f"\n{'--- Simulated ROI: DH-Adjusted vs Naive ---':^60}")
+    print(f"Compares betting with current DH edge adjustment vs betting naively.")
+    print(f"Uses historical DH rates to simulate actual payouts.\n")
+
+    print(f"{'Market':<8} {'Threshold':>10} {'DH Rate':>8} "
+          f"{'Naive EV':>9} {'Adj EV':>8} {'Verdict':>10}")
+
+    for market in ["t5", "t10", "t20"]:
+        s = stats[market]
+        if s["total_bets"] == 0:
+            continue
+
+        threshold_val = thresholds[market]
+        dh_rate = s["deadheat_bets"] / s["total_bets"] if s["total_bets"] else 0
+        current_adj = config.DEADHEAT_AVG_REDUCTION.get(market, 0) * 100
+
+        # Naive: ignoring dead-heat (overestimates edge)
+        # On average, a bet priced at X% edge loses ~DH_impact% to dead-heat
+        # So naive EV on a $100 bet with 5% edge = $5 - DH_impact
+        edge_impacts_data = edge_impacts.get(market, {})
+        avg_reduction = edge_impacts_data.get("avg_payout_reduction_pct", 0)
+
+        # Naive: assumes full payout on all wins
+        naive_ev = 5.0  # hypothetical 5% edge
+        # Adjusted: accounts for DH impact
+        adj_ev = 5.0 - avg_reduction
+
+        if adj_ev > 0:
+            verdict = "PROFITABLE"
+        else:
+            verdict = "SKIP"
+
+        print(f"{market:<8} {threshold_val:>10} {dh_rate*100:>7.1f}% "
+              f"{naive_ev:>8.1f}% {adj_ev:>7.1f}% {verdict:>10}")
+
+    # Pass/fail assessment
+    print(f"\n{'='*60}")
+    print("PASS/FAIL ASSESSMENT")
+    print(f"{'='*60}")
+
+    for market in ["t5", "t10", "t20"]:
+        data = edge_impacts.get(market, {})
+        if not data:
+            print(f"  {market}: N/A (insufficient data)")
+            continue
+
+        impact = data["avg_payout_reduction_pct"]
+        current = data["current_threshold_pct"]
+
+        if impact > current - 1:
+            status = "FAIL — threshold too low, raise it"
+        elif impact > 10:
+            status = "FAIL — DH impact too high, consider skipping"
+        else:
+            status = "PASS — current threshold covers DH impact"
+
+        print(f"  {market}: {status}")
+        print(f"    DH impact: {impact:.1f}% | Threshold: {current:.0f}% | "
+              f"Margin: {current - impact:.1f}%")
+
+    # Config recommendations
+    print(f"\n{'--- Config Recommendations ---':^60}")
+    for market in ["t5", "t10", "t20"]:
+        data = edge_impacts.get(market, {})
+        if data:
+            rec = data["recommended_threshold_pct"]
+            cur = data["current_threshold_pct"]
+            cur_adj = config.DEADHEAT_AVG_REDUCTION.get(market, 0) * 100
+            actual = data["avg_payout_reduction_pct"]
+
+            if abs(cur_adj - actual) > 0.5:
+                print(f"  DEADHEAT_AVG_REDUCTION['{market}']: "
+                      f"{cur_adj:.1f}% → {actual:.1f}% (measured)")
+            else:
+                print(f"  DEADHEAT_AVG_REDUCTION['{market}']: "
+                      f"{cur_adj:.1f}% — OK (measured: {actual:.1f}%)")
+
+            if rec > cur:
+                print(f"  MIN_EDGE['{market}']: {cur:.0f}% → {rec:.0f}% (raise)")
+            else:
+                print(f"  MIN_EDGE['{market}']: {cur:.0f}% — OK")
+
+    # Save results to disk
+    summary = {
+        "date_range": f"{start_year}-{end_year}",
         "events_processed": events_processed,
-        "stats": {k: {kk: vv for kk, vv in v.items() if kk != "reductions"}
-                  for k, v in stats.items()},
+        "markets": {},
     }
+
+    for market in ["t5", "t10", "t20"]:
+        s = stats[market]
+        summary["markets"][market] = {
+            "total_winning_bets": s["total_bets"],
+            "deadheat_bets": s["deadheat_bets"],
+            "dh_rate_pct": round(100 * s["deadheat_bets"] / s["total_bets"], 1)
+                if s["total_bets"] else 0,
+        }
+        if market in edge_impacts:
+            summary["markets"][market].update(edge_impacts[market])
+
+    out_path = BACKTEST_DIR / "deadheat_backtest_results.json"
+    with open(out_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nResults saved to {out_path}")
+
+    return summary
 
 
 if __name__ == "__main__":
-    analyze_deadheat_from_predictions()
+    import argparse
+    parser = argparse.ArgumentParser(description="Run dead-heat placement backtest")
+    parser.add_argument("--start-year", type=int, default=2022)
+    parser.add_argument("--end-year", type=int, default=2026)
+    args = parser.parse_args()
+
+    analyze_deadheat_from_predictions(args.start_year, args.end_year)
