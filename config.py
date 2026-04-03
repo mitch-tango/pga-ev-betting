@@ -29,8 +29,8 @@ BLEND_WEIGHTS = {
     "win":                  {"dg": 0.35, "books": 0.65},
     "placement":            {"dg": 0.55, "books": 0.45},   # T5, T10, T20
     "make_cut":             {"dg": 0.35, "books": 0.65},   # Binary outcome like win
-    "matchup":              {"dg": 0.45, "books": 0.55},   # Backtest optimal: 40-50% DG
-    "three_ball":           {"dg": 0.45, "books": 0.55},   # Same as matchup (same market dynamics)
+    "matchup":              {"dg": 1.0,  "books": 0.0},    # 75-event backtest: 100% DG tied for best ROI (2.4%)
+    "three_ball":           {"dg": 1.0,  "books": 0.0},    # Same as matchup
     "signature_win":        {"dg": 0.15, "books": 0.85},
     "signature_placement":  {"dg": 0.40, "books": 0.60},
     "deep_field":           {"dg": 1.0,  "books": 0.0},    # Rank 61+
@@ -54,18 +54,18 @@ BOOK_WEIGHTS = {
 }
 
 # --- Edge Thresholds ---
-# Calibrated from backtests:
-#   T5: raised to 25% due to ~20% dead-heat reduction (effectively skip most T5 bets)
-#   T10: raised to 5% due to ~3% dead-heat reduction
-#   T20: 3% threshold holds (only ~2.3% DH impact)
-#   Matchups: raised to 5% per backtest (better ROI at higher threshold)
+# Calibrated from backtests (80 events, 2022-2026):
+#   T5:  17.3% DH rate, ~11.8% payout reduction → effectively skip
+#   T10: 5.5% DH rate, ~3.6% reduction → 5% threshold covers it
+#   T20: 4.3% DH rate, ~3.5% reduction → raised to 5% (was 3%)
+#   Matchups: ROI consistent at 2.4% across 3-5% thresholds, use 5% for safety
 MIN_EDGE = {
     "win":                0.05,   # 5% — hardest market to beat
     "t5":                 0.25,   # 25% — effectively skip (dead-heat kills edge)
-    "t10":                0.05,   # 5% — raised for dead-heat buffer
-    "t20":                0.03,   # 3% — minimal dead-heat impact
-    "make_cut":           0.03,
-    "tournament_matchup": 0.05,   # 5% — raised per matchup backtest
+    "t10":                0.05,   # 5% — 3.6% DH buffer
+    "t20":                0.05,   # 5% — raised from 3% (3.5% DH impact at scale)
+    "make_cut":           0.03,   # 3% — no dead-heat on binary market
+    "tournament_matchup": 0.05,   # 5% — per matchup backtest
     "round_matchup":      0.05,   # 5%
     "3_ball":             0.05,   # 5%
     "live":               0.08,   # 8% — stale book odds (Amendment #6)
@@ -85,14 +85,14 @@ CORRELATION_HAIRCUT = [1.0, 0.5, 0.25, 0.125]
 
 # --- Dead-Heat (Amendment #2) ---
 # Average dead-heat reduction by placement market.
-# Calibrated from backtest (21 events, 2025-2026):
-#   T5:  28.4% of winners face DH → ~20% avg payout reduction → AVOID or high threshold
-#   T10: 4.3% face DH → ~3% avg payout reduction
-#   T20: 2.8% face DH → ~2.3% avg payout reduction
+# Calibrated from backtest (80 events, 2022-2026):
+#   T5:  17.3% DH rate → ~11.8% avg payout reduction → AVOID
+#   T10: 5.5% DH rate → ~3.6% avg payout reduction
+#   T20: 4.3% DH rate → ~3.5% avg payout reduction
 DEADHEAT_AVG_REDUCTION = {
-    "t5":  0.20,    # ~20% — T5 is significantly impacted by dead-heat
-    "t10": 0.03,    # ~3%
-    "t20": 0.023,   # ~2.3%
+    "t5":  0.118,   # ~11.8% — T5 is significantly impacted
+    "t10": 0.036,   # ~3.6%
+    "t20": 0.035,   # ~3.5%
 }
 
 # --- Signature Event ---
