@@ -305,13 +305,13 @@ def analyze_deadheat_from_predictions(start_year: int = 2022,
 
             if abs(cur_adj - actual) > 0.5:
                 print(f"  DEADHEAT_AVG_REDUCTION['{market}']: "
-                      f"{cur_adj:.1f}% → {actual:.1f}% (measured)")
+                      f"{cur_adj:.1f}% -> {actual:.1f}% (measured)")
             else:
                 print(f"  DEADHEAT_AVG_REDUCTION['{market}']: "
                       f"{cur_adj:.1f}% — OK (measured: {actual:.1f}%)")
 
             if rec > cur:
-                print(f"  MIN_EDGE['{market}']: {cur:.0f}% → {rec:.0f}% (raise)")
+                print(f"  MIN_EDGE['{market}']: {cur:.0f}% -> {rec:.0f}% (raise)")
             else:
                 print(f"  MIN_EDGE['{market}']: {cur:.0f}% — OK")
 

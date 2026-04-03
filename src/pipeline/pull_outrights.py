@@ -3,14 +3,14 @@ from __future__ import annotations
 """
 Pre-tournament outright odds pull.
 
-Pulls win, T5, T10, T20, and make-cut odds from DG API
+Pulls win, T10, T20, and make-cut odds from DG API
 (DG model + all sportsbooks). Used by run_pretournament.py.
 """
 
 from src.api.datagolf import DataGolfClient
 
 
-OUTRIGHT_MARKETS = ["win", "top_5", "top_10", "top_20", "make_cut"]
+OUTRIGHT_MARKETS = ["win", "top_10", "top_20", "make_cut"]
 
 
 def pull_all_outrights(tournament_slug: str | None = None,

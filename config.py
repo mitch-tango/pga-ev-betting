@@ -2,8 +2,8 @@
 PGA +EV Betting System — Configuration
 
 All constants, thresholds, blend weights, and sizing parameters.
-Calibrated from OAD backtest (278 events, 35,064 player-events, 2020-2026).
-Matchup weights are provisional (100% DG) until matchup backtest determines optimal.
+Calibrated from OAD backtest (278 events, 35,064 player-events, 2020-2026)
+and matchup/dead-heat backtests (99-101 events, 19,996 records, 2022-2026).
 """
 
 import os
@@ -24,13 +24,13 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 # --- Blend Weights ---
 # Win/placement weights from OAD backtest (278 events, 2020-2026).
-# Matchup/3-ball weights are 100% DG until backtest determines optimal (Amendment #7).
+# Matchup weights from 99-event backtest (19,996 records, 2022-2026).
 BLEND_WEIGHTS = {
     "win":                  {"dg": 0.35, "books": 0.65},
-    "placement":            {"dg": 0.55, "books": 0.45},   # T5, T10, T20
+    "placement":            {"dg": 0.55, "books": 0.45},   # T10, T20
     "make_cut":             {"dg": 0.35, "books": 0.65},   # Binary outcome like win
-    "matchup":              {"dg": 1.0,  "books": 0.0},    # 75-event backtest: 100% DG tied for best ROI (2.4%)
-    "three_ball":           {"dg": 1.0,  "books": 0.0},    # Same as matchup
+    "matchup":              {"dg": 0.10, "books": 0.90},   # 99-event backtest: 10% DG optimal by log-loss, ROI 2.5%
+    "three_ball":           {"dg": 1.0,  "books": 0.0},    # No book consensus data yet
     "signature_win":        {"dg": 0.15, "books": 0.85},
     "signature_placement":  {"dg": 0.40, "books": 0.60},
     "deep_field":           {"dg": 1.0,  "books": 0.0},    # Rank 61+
@@ -54,16 +54,15 @@ BOOK_WEIGHTS = {
 }
 
 # --- Edge Thresholds ---
-# Calibrated from backtests (80 events, 2022-2026):
-#   T5:  17.3% DH rate, ~11.8% payout reduction → effectively skip
-#   T10: 5.5% DH rate, ~3.6% reduction → 5% threshold covers it
-#   T20: 4.3% DH rate, ~3.5% reduction → raised to 5% (was 3%)
-#   Matchups: ROI consistent at 2.4% across 3-5% thresholds, use 5% for safety
+# Calibrated from backtests (101 events, 2022-2026):
+#   T5:  REMOVED — 19.9% DH rate, 13.6% payout reduction, -EV at any realistic edge
+#   T10: 6.6% DH rate, 4.4% reduction -> 6% threshold (raised from 5%)
+#   T20: 4.7% DH rate, 3.8% reduction -> 6% threshold (raised from 5%)
+#   Matchups: ROI consistent at 2.3-3.1% across thresholds, use 5%
 MIN_EDGE = {
     "win":                0.05,   # 5% — hardest market to beat
-    "t5":                 0.25,   # 25% — effectively skip (dead-heat kills edge)
-    "t10":                0.05,   # 5% — 3.6% DH buffer
-    "t20":                0.05,   # 5% — raised from 3% (3.5% DH impact at scale)
+    "t10":                0.06,   # 6% — 4.4% DH impact + buffer
+    "t20":                0.06,   # 6% — 3.8% DH impact + buffer
     "make_cut":           0.03,   # 3% — no dead-heat on binary market
     "tournament_matchup": 0.05,   # 5% — per matchup backtest
     "round_matchup":      0.05,   # 5%
@@ -85,14 +84,13 @@ CORRELATION_HAIRCUT = [1.0, 0.5, 0.25, 0.125]
 
 # --- Dead-Heat (Amendment #2) ---
 # Average dead-heat reduction by placement market.
-# Calibrated from backtest (80 events, 2022-2026):
-#   T5:  17.3% DH rate → ~11.8% avg payout reduction → AVOID
-#   T10: 5.5% DH rate → ~3.6% avg payout reduction
-#   T20: 4.3% DH rate → ~3.5% avg payout reduction
+# Calibrated from backtest (101 events, 2022-2026):
+#   T5:  REMOVED — 19.9% DH rate, 13.6% reduction, -EV
+#   T10: 6.6% DH rate -> 4.4% avg payout reduction
+#   T20: 4.7% DH rate -> 3.8% avg payout reduction
 DEADHEAT_AVG_REDUCTION = {
-    "t5":  0.118,   # ~11.8% — T5 is significantly impacted
-    "t10": 0.036,   # ~3.6%
-    "t20": 0.035,   # ~3.5%
+    "t10": 0.044,   # ~4.4%
+    "t20": 0.038,   # ~3.8%
 }
 
 # --- Signature Event ---
@@ -102,7 +100,7 @@ SIGNATURE_PURSE_THRESHOLD = 20_000_000
 DEEP_FIELD_RANK_THRESHOLD = 61  # Players ranked 61+ use 100% DG
 
 # --- Market Type Classification ---
-PLACEMENT_MARKETS = {"win", "t5", "t10", "t20", "make_cut"}
+PLACEMENT_MARKETS = {"win", "t10", "t20", "make_cut"}
 MATCHUP_MARKETS = {"tournament_matchup", "round_matchup"}
 THREE_BALL_MARKETS = {"3_ball"}
 ALL_MARKETS = PLACEMENT_MARKETS | MATCHUP_MARKETS | THREE_BALL_MARKETS

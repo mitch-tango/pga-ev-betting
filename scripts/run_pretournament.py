@@ -8,7 +8,7 @@ Usage:
     python scripts/run_pretournament.py [--dry-run] [--tour pga]
 
 Workflow:
-1. Pull outright odds (win, T5, T10, T20, MC) from DG API
+1. Pull outright odds (win, T10, T20, MC) from DG API
 2. Pull tournament matchup odds from DG API
 3. Run edge calculator on all markets
 4. Display candidate bets with correlation haircuts
@@ -37,7 +37,6 @@ import config
 # Market type mapping from DG API market names to our internal names
 MARKET_MAP = {
     "win": "win",
-    "top_5": "t5",
     "top_10": "t10",
     "top_20": "t20",
     "make_cut": "make_cut",

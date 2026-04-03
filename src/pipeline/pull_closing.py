@@ -47,7 +47,7 @@ def build_closing_snapshots(outrights: dict[str, list[dict]],
         List of snapshot dicts ready for odds_snapshots table
     """
     market_map = {
-        "win": "win", "top_5": "t5", "top_10": "t10",
+        "win": "win", "top_10": "t10",
         "top_20": "t20", "make_cut": "make_cut",
     }
     now = datetime.now(timezone.utc).isoformat()
