@@ -38,6 +38,16 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 # --- Discord ---
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+DISCORD_ALERT_CHANNEL_ID = int(os.getenv("DISCORD_ALERT_CHANNEL_ID", "0"))
+DISCORD_ALERT_ROLE_ID = int(os.getenv("DISCORD_ALERT_ROLE_ID", "0"))  # Role to @mention for high-edge alerts
+
+# --- Alert Schedule ---
+# Times are US Eastern. Pre-tournament scan runs day before (Wednesday).
+# Pre-round scans run each morning Thu-Sun.
+ALERT_PRETOURNAMENT_HOUR = 18   # 6 PM ET Wednesday
+ALERT_PREROUND_HOUR = 7        # 7 AM ET Thu-Sun
+ALERT_HIGH_EDGE_THRESHOLD = 0.08  # 8%+ edge gets @role mention
+ALERT_ENABLED = bool(os.getenv("DISCORD_ALERT_CHANNEL_ID", ""))
 
 # --- Blend Weights ---
 # Win/placement weights from OAD backtest (278 events, 2020-2026).

@@ -15,8 +15,9 @@ Slash commands:
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, time as dtime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -52,6 +53,9 @@ MARKET_MAP = {
 }
 
 
+ET = ZoneInfo("America/New_York")
+
+
 class EVBot(discord.Client):
     """PGA +EV Betting System Discord bot."""
 
@@ -64,17 +68,198 @@ class EVBot(discord.Client):
         self.last_scan: list[CandidateBet] = []
         self.last_scan_tournament_id: str | None = None
         self.last_scan_time: datetime | None = None
+        self._alert_task: asyncio.Task | None = None
 
     async def setup_hook(self):
         await self.tree.sync()
         log.info("Slash commands synced")
+        if config.ALERT_ENABLED:
+            self._alert_task = self.loop.create_task(self._scheduled_alerts())
+            log.info("Scheduled alerts enabled (channel %s)", config.DISCORD_ALERT_CHANNEL_ID)
 
     async def on_ready(self):
         log.info(f"Bot ready: {self.user} ({self.user.id})")
 
+    # ------------------------------------------------------------------
+    # Scheduled alert loop
+    # ------------------------------------------------------------------
+    async def _scheduled_alerts(self):
+        """Background loop that fires scans at configured times."""
+        await self.wait_until_ready()
+        log.info("Alert scheduler started")
+
+        while not self.is_closed():
+            now_et = datetime.now(ET)
+            weekday = now_et.weekday()  # 0=Mon … 6=Sun
+
+            # Wednesday 6 PM ET → pre-tournament scan
+            if weekday == 2 and now_et.hour == config.ALERT_PRETOURNAMENT_HOUR:
+                await self._run_and_alert("pretournament")
+
+            # Thu(3)-Sun(6) at configured hour → pre-round scan
+            if weekday in (3, 4, 5, 6) and now_et.hour == config.ALERT_PREROUND_HOUR:
+                round_number = weekday - 2  # Thu=R1, Fri=R2, Sat=R3, Sun=R4
+                await self._run_and_alert("preround", round_number=round_number)
+
+            # Sleep until the next hour boundary + 1 min buffer
+            now_et = datetime.now(ET)
+            next_hour = now_et.replace(minute=0, second=0, microsecond=0)
+            next_hour += timedelta(hours=1)
+            sleep_secs = (next_hour - now_et).total_seconds() + 60
+            await asyncio.sleep(sleep_secs)
+
+    async def _run_and_alert(
+        self, scan_type: str, *, round_number: int | None = None, tour: str = "pga",
+        channel=None,
+    ):
+        """Run a scan and post results to the alert channel (or a provided channel)."""
+        if channel is None:
+            channel = self.get_channel(config.DISCORD_ALERT_CHANNEL_ID)
+        if not channel:
+            log.warning("Alert channel %s not found", config.DISCORD_ALERT_CHANNEL_ID)
+            return
+
+        log.info("Running scheduled %s scan", scan_type)
+        try:
+            if scan_type == "pretournament":
+                result = await asyncio.to_thread(_run_pretournament_scan, tour)
+            else:
+                result = await asyncio.to_thread(_run_preround_scan, tour, round_number)
+        except Exception as e:
+            log.error("Scheduled %s scan failed: %s", scan_type, e)
+            await channel.send(f"Scheduled {scan_type} scan failed: {e}")
+            return
+
+        candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
+
+        # Cache for /place
+        self.last_scan = candidates
+        self.last_scan_tournament_id = tournament_id
+        self.last_scan_time = datetime.now()
+
+        if not candidates:
+            embed = discord.Embed(
+                title=f"Scheduled Scan — {tournament_name}",
+                description="No +EV candidates found above threshold.",
+                color=0x95A5A6,
+                timestamp=datetime.now(),
+            )
+            await channel.send(embed=embed)
+            return
+
+        # Build the alert embed
+        high_edge = [c for c in candidates if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
+        color = 0xE74C3C if high_edge else 0xE67E22
+
+        weekly_limit = bankroll * config.MAX_WEEKLY_EXPOSURE_PCT
+        tourn_limit = bankroll * config.MAX_TOURNAMENT_EXPOSURE_PCT
+
+        embed = discord.Embed(
+            title=f"Scheduled Scan — {tournament_name}",
+            description=(
+                f"**{len(candidates)}** candidates found"
+                f" ({len(high_edge)} high-edge)\n"
+                f"Bankroll: ${bankroll:,.2f} | "
+                f"Weekly: ${weekly_exp:,.0f}/${weekly_limit:,.0f} | "
+                f"Tournament: ${tourn_exp:,.0f}/${tourn_limit:,.0f}"
+            ),
+            color=color,
+            timestamp=datetime.now(),
+        )
+
+        lines = []
+        lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
+        for i, c in enumerate(candidates, 1):
+            if c.opponent_name:
+                name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
+            else:
+                name = c.player_name[:20]
+
+            mkt = c.market_type
+            if c.round_number:
+                mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
+
+            flag = " **" if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD else ""
+            lines.append(
+                f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
+                f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
+                f"{flag}"
+            )
+
+            if len("\n".join(lines)) > 900:
+                embed.add_field(
+                    name="Candidates" if len(embed.fields) == 0 else "\u200b",
+                    value=f"```\n" + "\n".join(lines) + "\n```",
+                    inline=False,
+                )
+                lines = []
+
+        if lines:
+            embed.add_field(
+                name="Candidates" if len(embed.fields) == 0 else "\u200b",
+                value=f"```\n" + "\n".join(lines) + "\n```",
+                inline=False,
+            )
+
+        embed.set_footer(text="Use /place <number> to log a bet")
+
+        # Mention role for high-edge alerts
+        mention = ""
+        if high_edge and config.DISCORD_ALERT_ROLE_ID:
+            mention = f"<@&{config.DISCORD_ALERT_ROLE_ID}> "
+
+        await channel.send(content=f"{mention}{len(high_edge)} high-edge bet(s) found!" if mention else None, embed=embed)
+
 
 
 bot = EVBot()
+
+
+# ---------------------------------------------------------------------------
+# /alert — manual trigger + status
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="alert", description="Trigger a scan alert now, or check alert status")
+@app_commands.describe(
+    action="What to do",
+    round_number="Round number (for preround)",
+    tour="Tour (default: pga)",
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="Run pre-tournament scan now", value="pretournament"),
+    app_commands.Choice(name="Run pre-round scan now", value="preround"),
+    app_commands.Choice(name="Show alert status", value="status"),
+])
+async def cmd_alert(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+    round_number: Optional[int] = None,
+    tour: Optional[str] = "pga",
+):
+    await interaction.response.defer()
+
+    if action.value == "status":
+        now_et = datetime.now(ET)
+        status_lines = [
+            f"**Alerts enabled:** {config.ALERT_ENABLED}",
+            f"**Channel:** <#{config.DISCORD_ALERT_CHANNEL_ID}>" if config.DISCORD_ALERT_CHANNEL_ID else "**Channel:** not set",
+            f"**High-edge threshold:** {config.ALERT_HIGH_EDGE_THRESHOLD*100:.0f}%",
+            f"**Pre-tournament:** Wed {config.ALERT_PRETOURNAMENT_HOUR}:00 ET",
+            f"**Pre-round:** Thu-Sun {config.ALERT_PREROUND_HOUR}:00 ET",
+            f"**Current time (ET):** {now_et.strftime('%A %H:%M')}",
+        ]
+        if bot.last_scan_time:
+            status_lines.append(f"**Last scan:** {bot.last_scan_time.strftime('%Y-%m-%d %H:%M')} ({len(bot.last_scan)} candidates)")
+        embed = discord.Embed(
+            title="Alert Configuration",
+            description="\n".join(status_lines),
+            color=0x3498DB,
+        )
+        await interaction.followup.send(embed=embed)
+        return
+
+    # Manual trigger — run scan and post alert to this channel
+    await interaction.followup.send(f"Running {action.value} scan...")
+    await bot._run_and_alert(action.value, round_number=round_number, tour=tour, channel=interaction.channel)
 
 
 # ---------------------------------------------------------------------------
