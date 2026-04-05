@@ -27,6 +27,8 @@ from datetime import datetime
 
 from src.pipeline.pull_outrights import pull_all_outrights
 from src.pipeline.pull_matchups import pull_tournament_matchups
+from src.parsers.start_matchups import parse_start_matchups_from_file
+from src.parsers.start_merger import merge_start_into_matchups
 from src.core.edge import calculate_placement_edges, calculate_matchup_edges
 from src.core.devig import american_to_decimal, decimal_to_american, parse_american_odds
 from src.normalize.players import resolve_candidates
@@ -210,6 +212,8 @@ def main():
                         help="Tour to scan (default: pga)")
     parser.add_argument("--tournament", default=None,
                         help="Tournament slug for cache folder")
+    parser.add_argument("--start-file", default=None,
+                        help="Path to copy-pasted Start matchup odds text file")
     args = parser.parse_args()
 
     tournament_slug = args.tournament
@@ -234,6 +238,8 @@ def main():
     print("\nPulling outright odds...")
     outrights = pull_all_outrights(tournament_slug, tour)
     for market, data in outrights.items():
+        if market.startswith("_"):
+            continue
         count = len(data) if isinstance(data, list) else 0
         print(f"  {market}: {count} players")
 
@@ -241,19 +247,29 @@ def main():
     matchups = pull_tournament_matchups(tournament_slug, tour)
     print(f"  Matchups: {len(matchups)}")
 
+    # Merge Start odds if provided
+    if args.start_file and matchups:
+        print(f"\nMerging Start odds from {args.start_file}...")
+        start_matchups = parse_start_matchups_from_file(args.start_file)
+        print(f"  Start matchups parsed: {len(start_matchups)}")
+        matchups, unmatched = merge_start_into_matchups(matchups, start_matchups)
+        matched = len(start_matchups) - len(unmatched)
+        print(f"  Matched to DG: {matched} | Unmatched: {len(unmatched)}")
+        for u in unmatched:
+            print(f"    ? {u['p1_name']} vs {u['p2_name']}")
+
     # ---- Detect tournament info ----
     is_signature = False
-    tournament_name = tournament_slug or "Unknown Tournament"
+    tournament_name = outrights.get("_event_name") or tournament_slug or "Unknown Tournament"
     tournament_id = None
     dg_event_id = None
 
-    # Extract event info from outrights data
-    if outrights.get("win") and isinstance(outrights["win"], list) and outrights["win"]:
-        first_record = outrights["win"][0]
-        event_name = first_record.get("event_name", tournament_name)
-        if event_name:
-            tournament_name = event_name
-        dg_event_id = str(first_record.get("event_id", "")) or None
+    # Resolve event name to DG event ID via event list API
+    if outrights.get("_event_name"):
+        from src.api.datagolf import DataGolfClient
+        dg_event_id = DataGolfClient().resolve_event_id(
+            outrights["_event_name"], tour
+        )
 
     # Create/find tournament record in DB
     season = datetime.now().year

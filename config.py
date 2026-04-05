@@ -22,6 +22,9 @@ API_MAX_RETRIES = 3
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
+# --- Discord ---
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+
 # --- Blend Weights ---
 # Win/placement weights from OAD backtest (278 events, 2020-2026).
 # Matchup weights from 99-event backtest (19,996 records, 2022-2026).
@@ -29,7 +32,7 @@ BLEND_WEIGHTS = {
     "win":                  {"dg": 0.35, "books": 0.65},
     "placement":            {"dg": 0.55, "books": 0.45},   # T10, T20
     "make_cut":             {"dg": 0.35, "books": 0.65},   # Binary outcome like win
-    "matchup":              {"dg": 0.10, "books": 0.90},   # 99-event backtest: 10% DG optimal by log-loss, ROI 2.5%
+    "matchup":              {"dg": 0.20, "books": 0.80},   # 99-event backtest: 20% DG optimal by log-loss (full-distribution derivation), ROI 2.5%
     "three_ball":           {"dg": 1.0,  "books": 0.0},    # No book consensus data yet
     "signature_win":        {"dg": 0.15, "books": 0.85},
     "signature_placement":  {"dg": 0.40, "books": 0.60},
@@ -42,15 +45,17 @@ BLEND_WEIGHTS = {
 BOOK_WEIGHTS = {
     "win": {
         "pinnacle": 2, "betcris": 2, "betonline": 2,
-        "draftkings": 1, "fanduel": 1, "bovada": 1,
+        "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
     },
     "placement": {
-        "betonline": 1, "draftkings": 1, "fanduel": 1, "bovada": 1,
+        "betonline": 1, "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
     },
     "make_cut": {
         "pinnacle": 2, "betcris": 2, "betonline": 2,
-        "draftkings": 1, "fanduel": 1, "bovada": 1,
+        "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
     },
+    # Matchups: equal-weighted average in edge.py (no weight dict needed),
+    # but listed here for reference when Start outrights are added.
 }
 
 # --- Edge Thresholds ---

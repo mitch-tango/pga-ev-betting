@@ -18,10 +18,15 @@ def pull_all_outrights(tournament_slug: str | None = None,
     """Pull all outright markets for the current tournament.
 
     Returns:
-        {"win": [player_records], "top_5": [...], ...}
+        {"win": [player_records], "top_10": [...], ...,
+         "_event_name": "Valero Texas Open"}
+
+    The "_event_name" key (if present) carries the event name from the
+    DG API response, used for tournament auto-detection.
     """
     dg = DataGolfClient()
     results = {}
+    event_name = None
 
     for market in OUTRIGHT_MARKETS:
         result = dg.get_outrights(
@@ -32,6 +37,8 @@ def pull_all_outrights(tournament_slug: str | None = None,
             data = result["data"]
             if isinstance(data, dict) and "odds" in data:
                 # Live API returns {"odds": [...], "event_name": ..., ...}
+                if not event_name and data.get("event_name"):
+                    event_name = data["event_name"]
                 odds_list = data.get("odds", [])
                 if isinstance(odds_list, list):
                     results[market] = odds_list
@@ -42,5 +49,8 @@ def pull_all_outrights(tournament_slug: str | None = None,
         else:
             print(f"  Warning: failed to pull {market}: {result.get('message', '')[:100]}")
             results[market] = []
+
+    if event_name:
+        results["_event_name"] = event_name
 
     return results

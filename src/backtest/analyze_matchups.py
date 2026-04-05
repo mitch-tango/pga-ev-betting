@@ -49,6 +49,64 @@ def brier_score(prob: float, outcome: float) -> float:
     return (prob - outcome) ** 2
 
 
+def _player_finish_bins(data: dict) -> list[float] | None:
+    """Convert a player's cumulative finish probabilities into discrete bins.
+
+    Uses DG prediction fields (win, top_3, top_5, top_10, top_20, top_30,
+    make_cut) to build 8 bins representing probability mass in each
+    finish-position range.
+
+    Returns:
+        List of 8 probabilities (must sum to ~1.0):
+            [0] 1st           (win)
+            [1] 2nd-3rd       (top_3 - win)
+            [2] 4th-5th       (top_5 - top_3)
+            [3] 6th-10th      (top_10 - top_5)
+            [4] 11th-20th     (top_20 - top_10)
+            [5] 21st-30th     (top_30 - top_20)
+            [6] 31st-cut line (make_cut - top_30)
+            [7] miss cut      (1 - make_cut)
+        Or None if essential fields are missing.
+    """
+    win = data.get("win", 0) or 0
+    t3 = data.get("top_3", 0) or 0
+    t5 = data.get("top_5", 0) or 0
+    t10 = data.get("top_10", 0) or 0
+    t20 = data.get("top_20", 0) or 0
+    t30 = data.get("top_30", 0) or 0
+    mc = data.get("make_cut", 0) or 0
+
+    # Need at least win and make_cut to be meaningful
+    if win <= 0 and mc <= 0:
+        return None
+
+    # Ensure monotonicity (cumulative probs should be non-decreasing)
+    cumulative = [win, t3, t5, t10, t20, t30, mc]
+    for i in range(1, len(cumulative)):
+        if cumulative[i] < cumulative[i - 1]:
+            cumulative[i] = cumulative[i - 1]
+
+    # Build bins (clamp negatives from floating-point noise)
+    bins = [
+        cumulative[0],                          # 1st
+        max(0, cumulative[1] - cumulative[0]),  # 2nd-3rd
+        max(0, cumulative[2] - cumulative[1]),  # 4th-5th
+        max(0, cumulative[3] - cumulative[2]),  # 6th-10th
+        max(0, cumulative[4] - cumulative[3]),  # 11th-20th
+        max(0, cumulative[5] - cumulative[4]),  # 21st-30th
+        max(0, cumulative[6] - cumulative[5]),  # 31st-cut
+        max(0, 1.0 - cumulative[6]),            # miss cut
+    ]
+
+    # Normalize to sum to 1.0 (handles minor float drift)
+    total = sum(bins)
+    if total <= 0:
+        return None
+    bins = [b / total for b in bins]
+
+    return bins
+
+
 def derive_matchup_prob_from_predictions(
     preds: dict, p1_dg_id: int, p2_dg_id: int
 ) -> float | None:
@@ -57,14 +115,17 @@ def derive_matchup_prob_from_predictions(
     Uses the "baseline_history_fit" model when available (includes course
     history), otherwise falls back to "baseline".
 
-    The derivation uses win + placement probabilities as a proxy for
-    the player's overall strength distribution. A simple approach:
-    P(A beats B) ≈ A's expected rank percentile relative to B's.
+    Converts each player's cumulative finish probabilities (win, T3, T5,
+    T10, T20, T30, MC) into 8 discrete position bins, then computes
+    P(A beats B) by integrating over all bin-pair combinations:
 
-    More precisely, we use a logistic model based on the ratio of
-    win probabilities, which captures the relative strength well:
-    P(A beats B) ≈ pA / (pA + pB) where p = win probability.
-    This is equivalent to a Bradley-Terry model.
+        P(A beats B) = sum over all (i < j) of bins_A[i] * bins_B[j]
+                      + 0.5 * sum over all i of bins_A[i] * bins_B[i]
+
+    where lower bin index = better finish. The 0.5 factor for same-bin
+    pairs reflects that within a bin, each player is equally likely to
+    finish ahead (ties are pushes in matchup betting, so this is
+    conservative).
     """
     if not preds:
         return None
@@ -91,26 +152,24 @@ def derive_matchup_prob_from_predictions(
     if not p1_data or not p2_data:
         return None
 
-    # Bradley-Terry from win probabilities
-    p1_win = p1_data.get("win", 0)
-    p2_win = p2_data.get("win", 0)
-
-    if p1_win + p2_win <= 0:
+    bins_a = _player_finish_bins(p1_data)
+    bins_b = _player_finish_bins(p2_data)
+    if bins_a is None or bins_b is None:
         return None
 
-    # P(A beats B) using Bradley-Terry
-    prob = p1_win / (p1_win + p2_win)
+    n = len(bins_a)
 
-    # Refine with T20 probabilities for better calibration on non-elite players
-    p1_t20 = p1_data.get("top_20", 0)
-    p2_t20 = p2_data.get("top_20", 0)
+    # P(A beats B) = P(A in better bin) + 0.5 * P(same bin)
+    p_a_wins = 0.0
+    for i in range(n):
+        # A in bin i beats B in any worse bin j > i
+        for j in range(i + 1, n):
+            p_a_wins += bins_a[i] * bins_b[j]
+        # Same bin: 50/50 split
+        p_a_wins += 0.5 * bins_a[i] * bins_b[i]
 
-    if p1_t20 + p2_t20 > 0:
-        prob_t20 = p1_t20 / (p1_t20 + p2_t20)
-        # Blend win-based and T20-based estimates (T20 has more signal for mid-field)
-        prob = 0.4 * prob + 0.6 * prob_t20
-
-    return prob
+    # Clamp to valid probability range
+    return max(0.01, min(0.99, p_a_wins))
 
 
 def load_matchup_data(event_id: str, year: int) -> dict:

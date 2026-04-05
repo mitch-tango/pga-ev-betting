@@ -335,6 +335,33 @@ class DataGolfClient:
             "file_format": "json",
         })
 
+    def resolve_event_id(self, event_name: str, tour: str = "pga") -> str | None:
+        """Look up the DG event_id for a given event name.
+
+        Searches the event list for the best match. Returns the event_id
+        string or None if not found.
+        """
+        result = self.get_event_list(tour=tour)
+        if result["status"] != "ok":
+            return None
+
+        events = result["data"]
+        if not isinstance(events, list):
+            return None
+
+        # Exact match first (case-insensitive)
+        target = event_name.lower().strip()
+        for e in events:
+            if e.get("event_name", "").lower().strip() == target:
+                return str(e["event_id"])
+
+        # Substring match fallback
+        for e in events:
+            if target in e.get("event_name", "").lower():
+                return str(e["event_id"])
+
+        return None
+
     def get_historical_predictions(self, event_id: str, year: int,
                                     tour: str = "pga",
                                     odds_format: str = "percent") -> dict:

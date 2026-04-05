@@ -19,6 +19,8 @@ import argparse
 from datetime import datetime
 
 from src.pipeline.pull_matchups import pull_round_matchups, pull_3balls
+from src.parsers.start_matchups import parse_start_matchups_from_file
+from src.parsers.start_merger import merge_start_into_matchups
 from src.core.edge import calculate_matchup_edges, calculate_3ball_edges
 from src.core.devig import american_to_decimal, decimal_to_american
 from src.normalize.players import resolve_candidates
@@ -170,6 +172,8 @@ def main():
                         help="Round number (1-4)")
     parser.add_argument("--tour", default="pga")
     parser.add_argument("--tournament", default=None)
+    parser.add_argument("--start-file", default=None,
+                        help="Path to copy-pasted Start matchup odds text file")
     args = parser.parse_args()
 
     bankroll = db.get_bankroll()
@@ -204,6 +208,19 @@ def main():
     print("\nPulling round matchups...")
     round_matchups = pull_round_matchups(args.tournament, args.tour)
     print(f"  Round matchups: {len(round_matchups)}")
+
+    # Merge Start odds if provided
+    if args.start_file and round_matchups:
+        print(f"\nMerging Start odds from {args.start_file}...")
+        start_matchups = parse_start_matchups_from_file(args.start_file)
+        print(f"  Start matchups parsed: {len(start_matchups)}")
+        round_matchups, unmatched = merge_start_into_matchups(
+            round_matchups, start_matchups
+        )
+        matched = len(start_matchups) - len(unmatched)
+        print(f"  Matched to DG: {matched} | Unmatched: {len(unmatched)}")
+        for u in unmatched:
+            print(f"    ? {u['p1_name']} vs {u['p2_name']}")
 
     # Pull 3-balls
     print("Pulling 3-ball odds...")

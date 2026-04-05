@@ -7,8 +7,11 @@ Closing odds capture — run just before tournament/round start.
 Usage:
     python scripts/run_closing_odds.py [--tour pga] [--tournament NAME]
 
-Captures closing odds for all placement markets, stores snapshots
-in Supabase, and computes CLV for all placed bets.
+Captures closing odds for all placement and matchup markets, stores
+snapshots in Supabase, and computes CLV for all placed bets.
+
+Tournament ID is auto-detected (from outrights data or this week's bets).
+Pass --tournament-id to override.
 
 When to run:
 - Pre-tournament placements: Thursday morning, before R1 tee times
@@ -23,9 +26,9 @@ import argparse
 from datetime import datetime
 
 from src.pipeline.pull_closing import (
-    pull_closing_outrights, build_closing_snapshots,
+    pull_closing_outrights, pull_closing_matchups, build_closing_snapshots,
 )
-from src.core.devig import parse_american_odds, devig_independent, power_devig
+from src.core.devig import parse_american_odds
 from src.db import supabase_client as db
 import config
 
@@ -93,6 +96,112 @@ def match_closing_to_bets(snapshots: list[dict], tournament_id: str | None):
     return matched
 
 
+def build_closing_matchup_snapshots(
+    round_matchups: list[dict],
+    three_balls: list[dict],
+    tournament_id: str | None,
+) -> list[dict]:
+    """Convert matchup/3-ball odds into closing snapshot records.
+
+    DG matchup format: {"p1_player_name": ..., "p2_player_name": ...,
+                        "odds": {"book": {"p1": "-130", "p2": "+110"}, ...}}
+    """
+    from datetime import timezone
+    now = datetime.now(timezone.utc).isoformat()
+    snapshots = []
+
+    for m in round_matchups:
+        odds_by_book = m.get("odds", {})
+        for side in ("p1", "p2"):
+            player_name = m.get(f"{side}_player_name", "").strip()
+            if not player_name:
+                continue
+            opponent = "p2" if side == "p1" else "p1"
+
+            # Extract this player's odds from each book
+            book_odds = {}
+            for book_name, book_data in odds_by_book.items():
+                if isinstance(book_data, dict) and side in book_data:
+                    book_odds[book_name] = book_data[side]
+
+            snapshot = {
+                "snapshot_type": "closing",
+                "snapshot_timestamp": now,
+                "market_type": "round_matchup",
+                "player_name": player_name,
+                "player_dg_id": str(m.get(f"{side}_dg_id", "")),
+                "opponent_name": m.get(f"{opponent}_player_name", ""),
+                "book_odds": book_odds if book_odds else None,
+            }
+            if tournament_id:
+                snapshot["tournament_id"] = tournament_id
+            snapshots.append(snapshot)
+
+    for tb in three_balls:
+        odds_by_book = tb.get("odds", {})
+        for side in ("p1", "p2", "p3"):
+            player_name = tb.get(f"{side}_player_name", "").strip()
+            if not player_name:
+                continue
+
+            book_odds = {}
+            for book_name, book_data in odds_by_book.items():
+                if isinstance(book_data, dict) and side in book_data:
+                    book_odds[book_name] = book_data[side]
+
+            snapshot = {
+                "snapshot_type": "closing",
+                "snapshot_timestamp": now,
+                "market_type": "3_ball",
+                "player_name": player_name,
+                "player_dg_id": str(tb.get(f"{side}_dg_id", "")),
+                "book_odds": book_odds if book_odds else None,
+            }
+            if tournament_id:
+                snapshot["tournament_id"] = tournament_id
+            snapshots.append(snapshot)
+
+    return snapshots
+
+
+def detect_tournament_id(outrights: dict, cli_override: str | None) -> str | None:
+    """Auto-detect tournament ID, matching run_pretournament/run_preround flow.
+
+    Priority:
+    1. CLI override (--tournament-id)
+    2. DG event ID from outrights data -> DB lookup
+    3. Most recent tournament_id from this week's bets
+    """
+    if cli_override:
+        print(f"  Using CLI tournament_id: {cli_override}")
+        return cli_override
+
+    # Try resolving event name from outrights metadata (same as run_pretournament)
+    event_name = outrights.get("_event_name")
+    if event_name:
+        from src.api.datagolf import DataGolfClient
+        dg_event_id = DataGolfClient().resolve_event_id(event_name)
+        if dg_event_id:
+            season = datetime.now().year
+            existing = db.get_tournament(dg_event_id, season)
+            if existing:
+                print(f"  Auto-detected: {existing['tournament_name']} (from DG event ID)")
+                return existing["id"]
+
+    # Fallback: most recent tournament from this week's bets (same as run_preround)
+    existing_bets = db.get_open_bets_for_week()
+    for b in sorted(existing_bets, key=lambda x: x.get("bet_timestamp", ""),
+                    reverse=True):
+        if b.get("tournament_id"):
+            t = db.get_tournament_by_id(b["tournament_id"])
+            name = t.get("tournament_name", b["tournament_id"]) if t else b["tournament_id"]
+            print(f"  Auto-detected: {name} (from this week's bets)")
+            return b["tournament_id"]
+
+    print("  Warning: Could not detect tournament_id — CLV matching will be skipped")
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Capture closing odds and compute CLV"
@@ -101,7 +210,9 @@ def main():
     parser.add_argument("--tournament", default=None,
                         help="Tournament slug for cache")
     parser.add_argument("--tournament-id", default=None,
-                        help="Supabase tournament UUID")
+                        help="Supabase tournament UUID (auto-detected if omitted)")
+    parser.add_argument("--matchups", action="store_true",
+                        help="Also capture closing matchup/3-ball odds")
     args = parser.parse_args()
 
     print(f"=== Closing Odds Capture ===")
@@ -111,26 +222,47 @@ def main():
     print("\nPulling closing outright odds...")
     outrights = pull_closing_outrights(args.tournament, args.tour)
     for market, data in outrights.items():
+        if market.startswith("_"):
+            continue
         count = len(data) if isinstance(data, list) else 0
         print(f"  {market}: {count} players")
 
-    # Build snapshots
-    snapshots = build_closing_snapshots(outrights, args.tournament_id)
-    print(f"\nBuilt {len(snapshots)} closing snapshots")
+    # Auto-detect tournament ID
+    print("\nDetecting tournament...")
+    tournament_id = detect_tournament_id(outrights, args.tournament_id)
+
+    # Build outright snapshots
+    snapshots = build_closing_snapshots(outrights, tournament_id)
+    print(f"\nBuilt {len(snapshots)} outright closing snapshots")
+
+    # Pull and build matchup snapshots
+    if args.matchups:
+        print("\nPulling closing matchup odds...")
+        matchup_data = pull_closing_matchups(args.tournament, args.tour)
+        round_matchups = matchup_data.get("round_matchups", [])
+        three_balls = matchup_data.get("3_balls", [])
+        print(f"  Round matchups: {len(round_matchups)}")
+        print(f"  3-balls: {len(three_balls)}")
+
+        matchup_snapshots = build_closing_matchup_snapshots(
+            round_matchups, three_balls, tournament_id
+        )
+        snapshots.extend(matchup_snapshots)
+        print(f"  Built {len(matchup_snapshots)} matchup closing snapshots")
 
     # Store in Supabase
     if snapshots:
         stored = db.insert_odds_snapshots(snapshots)
-        print(f"Stored {len(stored)} snapshots in Supabase")
+        print(f"Stored {len(stored)} total snapshots in Supabase")
 
     # Match to placed bets and compute CLV
     print("\nMatching closing odds to placed bets...")
-    matched = match_closing_to_bets(snapshots, args.tournament_id)
+    matched = match_closing_to_bets(snapshots, tournament_id)
     print(f"CLV computed for {matched} bets")
 
     # Show CLV summary
-    if args.tournament_id:
-        bets = db.get_bets_for_tournament(args.tournament_id)
+    if tournament_id:
+        bets = db.get_bets_for_tournament(tournament_id)
         clv_bets = [b for b in bets if b.get("clv") is not None]
         if clv_bets:
             avg_clv = sum(b["clv"] for b in clv_bets) / len(clv_bets)
