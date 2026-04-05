@@ -210,3 +210,16 @@ Identical to `DataGolfClient._cache_response`. Writes JSON to `{cache_dir}/{tour
 5. **Conservative rate limiting.** 0.1s between calls (10 req/sec effective) leaves margin vs Kalshi's 20 req/sec limit. This is configurable via `config.KALSHI_RATE_LIMIT_DELAY` (added in section-03).
 
 6. **Future: Polymarket.** Leave a comment at the top of `src/api/kalshi.py` noting that `src/api/polymarket.py` would follow the same client pattern (Gamma API for discovery, CLOB API for prices, no auth for reads).
+
+---
+
+## Implementation Notes (Post-Build)
+
+**Files created:** `src/api/kalshi.py`, `tests/test_kalshi_client.py`
+
+**Deviations from plan:**
+- Added getattr fallback for `API_TIMEOUT` and `API_MAX_RETRIES` (consistency with KALSHI_BASE_URL pattern).
+- Added max_pages=50 guard on `_paginated_call` to prevent infinite loops from stuck cursors.
+- Added print warning when pagination encounters mid-stream API errors (previously silent).
+
+**Final test count:** 21 tests, all passing.

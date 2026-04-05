@@ -16,7 +16,12 @@
     "section-07-edge-deadheat",
     "section-08-workflow-integration"
   ],
-  "sections_state": {},
+  "sections_state": {
+    "section-01-odds-conversion": {
+      "status": "complete",
+      "commit_hash": "a3bc514"
+    }
+  },
   "pre_commit": {
     "present": false,
     "type": "none",
