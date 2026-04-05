@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from src.api.kalshi import KalshiClient
-from src.core.devig import kalshi_midpoint
+from src.core.devig import kalshi_midpoint, kalshi_price_to_american
 from src.pipeline.kalshi_matching import (
     extract_player_name_outright,
     extract_player_names_h2h,
@@ -271,3 +271,105 @@ def pull_kalshi_matchups(
     except Exception:
         logger.warning("Kalshi: matchup pull failed", exc_info=True)
         return []
+
+
+# ---- Merge Functions ----
+
+# DG uses "top_10"/"top_20", Kalshi pull returns "t10"/"t20"
+_DG_TO_KALSHI_MARKET = {"win": "win", "top_10": "t10", "top_20": "t20"}
+
+
+def merge_kalshi_into_outrights(
+    dg_outrights: dict[str, list[dict]],
+    kalshi_outrights: dict[str, list[dict]],
+) -> dict[str, list[dict]]:
+    """Inject Kalshi data as book columns into DG outright data.
+
+    For each market type, finds matching players by canonical name, then:
+    1. Adds "kalshi" key with American odds string (from midpoint prob)
+    2. Adds "_kalshi_ask_prob" key with raw ask probability (float)
+
+    Mutates dg_outrights in-place and returns it.
+    """
+    for dg_key, kalshi_key in _DG_TO_KALSHI_MARKET.items():
+        dg_players = dg_outrights.get(dg_key)
+        kalshi_players = kalshi_outrights.get(kalshi_key, [])
+
+        if not dg_players or not kalshi_players:
+            continue
+
+        # Build lookup by normalized player name
+        kalshi_lookup = {}
+        for kp in kalshi_players:
+            name = kp["player_name"].strip().lower()
+            if name not in kalshi_lookup:
+                kalshi_lookup[name] = kp
+
+        # Match and inject
+        for player in dg_players:
+            pname = player.get("player_name", "").strip().lower()
+            kp = kalshi_lookup.get(pname)
+            if not kp:
+                continue
+
+            mid_prob = kp["kalshi_mid_prob"]
+            if mid_prob <= 0 or mid_prob >= 1:
+                continue
+
+            american = kalshi_price_to_american(str(mid_prob))
+            if not american:
+                continue
+
+            player["kalshi"] = american
+            player["_kalshi_ask_prob"] = kp["kalshi_ask_prob"]
+
+    return dg_outrights
+
+
+def merge_kalshi_into_matchups(
+    dg_matchups: list[dict],
+    kalshi_matchups: list[dict],
+) -> list[dict]:
+    """Inject Kalshi H2H data into DG matchup odds dicts.
+
+    Finds matching pairings by player names (order-independent), then
+    adds a "kalshi" entry to the matchup's odds dict with p1/p2 American
+    odds strings aligned to the DG matchup's player order.
+
+    Mutates dg_matchups in-place and returns it.
+    """
+    if not kalshi_matchups:
+        return dg_matchups
+
+    # Build lookup by frozenset of normalized names
+    kalshi_lookup = {}
+    for km in kalshi_matchups:
+        key = frozenset({km["p1_name"].strip().lower(),
+                         km["p2_name"].strip().lower()})
+        if key not in kalshi_lookup:
+            kalshi_lookup[key] = km
+
+    for matchup in dg_matchups:
+        p1 = matchup.get("p1_player_name", "").strip().lower()
+        p2 = matchup.get("p2_player_name", "").strip().lower()
+        key = frozenset({p1, p2})
+
+        km = kalshi_lookup.get(key)
+        if not km:
+            continue
+
+        # Align player order: determine which Kalshi player is DG's p1
+        km_p1_lower = km["p1_name"].strip().lower()
+        if km_p1_lower == p1:
+            p1_prob, p2_prob = km["p1_prob"], km["p2_prob"]
+        else:
+            p1_prob, p2_prob = km["p2_prob"], km["p1_prob"]
+
+        p1_american = kalshi_price_to_american(str(p1_prob))
+        p2_american = kalshi_price_to_american(str(p2_prob))
+
+        if not p1_american or not p2_american:
+            continue
+
+        odds_dict = matchup.setdefault("odds", {})
+        odds_dict["kalshi"] = {"p1": p1_american, "p2": p2_american}

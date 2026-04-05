@@ -1,8 +1,11 @@
-"""Tests for Kalshi pipeline pull (outrights and matchups)."""
+"""Tests for Kalshi pipeline pull and merge (outrights and matchups)."""
 
 from unittest.mock import patch, MagicMock
 
-from src.pipeline.pull_kalshi import pull_kalshi_outrights, pull_kalshi_matchups
+from src.pipeline.pull_kalshi import (
+    pull_kalshi_outrights, pull_kalshi_matchups,
+    merge_kalshi_into_outrights, merge_kalshi_into_matchups,
+)
 
 
 def _make_market(title, subtitle, yes_bid, yes_ask, open_interest,
@@ -270,3 +273,141 @@ class TestPullKalshiMatchups:
             tournament_end="2026-04-12",
         )
         assert result == []
+
+
+# ---- Merge Tests ----
+
+class TestMergeKalshiIntoOutrights:
+
+    def _dg_outrights(self):
+        return {
+            "win": [
+                {"player_name": "Scheffler, Scottie", "dg_id": "1",
+                 "draftkings": "+400", "fanduel": "+450"},
+                {"player_name": "McIlroy, Rory", "dg_id": "2",
+                 "draftkings": "+800", "fanduel": "+900"},
+                {"player_name": "Hovland, Viktor", "dg_id": "3",
+                 "draftkings": "+2000"},
+            ],
+            "top_10": [
+                {"player_name": "Scheffler, Scottie", "dg_id": "1",
+                 "draftkings": "-200"},
+            ],
+        }
+
+    def _kalshi_outrights(self):
+        return {
+            "win": [
+                {"player_name": "Scheffler, Scottie", "kalshi_mid_prob": 0.22,
+                 "kalshi_ask_prob": 0.24, "open_interest": 500},
+                {"player_name": "McIlroy, Rory", "kalshi_mid_prob": 0.09,
+                 "kalshi_ask_prob": 0.10, "open_interest": 200},
+            ],
+            "t10": [
+                {"player_name": "Scheffler, Scottie", "kalshi_mid_prob": 0.52,
+                 "kalshi_ask_prob": 0.54, "open_interest": 300},
+            ],
+            "t20": [],
+        }
+
+    def test_adds_kalshi_key_with_american_odds(self):
+        dg = self._dg_outrights()
+        kalshi = self._kalshi_outrights()
+        result = merge_kalshi_into_outrights(dg, kalshi)
+        scheffler = result["win"][0]
+        assert "kalshi" in scheffler
+        assert scheffler["kalshi"].startswith("+") or scheffler["kalshi"].startswith("-")
+
+    def test_american_odds_derived_from_midpoint_not_ask(self):
+        dg = self._dg_outrights()
+        kalshi = self._kalshi_outrights()
+        result = merge_kalshi_into_outrights(dg, kalshi)
+        scheffler = result["win"][0]
+        # mid=0.22 -> +355 (approx), ask=0.24 -> +317 (approx)
+        # The value should be from midpoint, so higher (more plus)
+        odds_val = int(scheffler["kalshi"].replace("+", ""))
+        assert odds_val > 300  # midpoint-based, not ask-based
+
+    def test_unmatched_kalshi_players_skipped(self):
+        dg = self._dg_outrights()
+        kalshi = {"win": [
+            {"player_name": "Unknown Player", "kalshi_mid_prob": 0.05,
+             "kalshi_ask_prob": 0.06, "open_interest": 200},
+        ], "t10": [], "t20": []}
+        result = merge_kalshi_into_outrights(dg, kalshi)
+        for player in result["win"]:
+            assert "kalshi" not in player
+
+    def test_existing_book_columns_not_modified(self):
+        dg = self._dg_outrights()
+        kalshi = self._kalshi_outrights()
+        merge_kalshi_into_outrights(dg, kalshi)
+        assert dg["win"][0]["draftkings"] == "+400"
+        assert dg["win"][0]["fanduel"] == "+450"
+
+    def test_players_without_kalshi_data_have_no_kalshi_key(self):
+        dg = self._dg_outrights()
+        kalshi = self._kalshi_outrights()
+        merge_kalshi_into_outrights(dg, kalshi)
+        hovland = dg["win"][2]
+        assert "kalshi" not in hovland
+
+    def test_stores_ask_data_for_bettable_edge(self):
+        dg = self._dg_outrights()
+        kalshi = self._kalshi_outrights()
+        merge_kalshi_into_outrights(dg, kalshi)
+        scheffler = dg["win"][0]
+        assert "_kalshi_ask_prob" in scheffler
+        assert isinstance(scheffler["_kalshi_ask_prob"], float)
+        assert scheffler["_kalshi_ask_prob"] == 0.24
+
+
+class TestMergeKalshiIntoMatchups:
+
+    def _dg_matchups(self):
+        return [
+            {
+                "p1_player_name": "Scheffler, Scottie",
+                "p2_player_name": "McIlroy, Rory",
+                "p1_dg_id": "1", "p2_dg_id": "2",
+                "odds": {
+                    "datagolf": {"p1": "-150", "p2": "+130"},
+                    "draftkings": {"p1": "-160", "p2": "+140"},
+                },
+            },
+        ]
+
+    def _kalshi_matchups(self):
+        return [
+            {"p1_name": "Scheffler, Scottie", "p2_name": "McIlroy, Rory",
+             "p1_prob": 0.565, "p2_prob": 0.435, "p1_oi": 300, "p2_oi": 300},
+        ]
+
+    def test_injects_kalshi_into_matchup_odds_dict(self):
+        dg = self._dg_matchups()
+        kalshi = self._kalshi_matchups()
+        merge_kalshi_into_matchups(dg, kalshi)
+        assert "kalshi" in dg[0]["odds"]
+        kalshi_odds = dg[0]["odds"]["kalshi"]
+        assert "p1" in kalshi_odds
+        assert "p2" in kalshi_odds
+
+    def test_unmatched_pairings_skipped(self):
+        dg = self._dg_matchups()
+        kalshi = [
+            {"p1_name": "Player X", "p2_name": "Player Y",
+             "p1_prob": 0.5, "p2_prob": 0.5, "p1_oi": 100, "p2_oi": 100},
+        ]
+        merge_kalshi_into_matchups(dg, kalshi)
+        assert "kalshi" not in dg[0]["odds"]
+
+    def test_kalshi_odds_same_format_as_other_books(self):
+        dg = self._dg_matchups()
+        kalshi = self._kalshi_matchups()
+        merge_kalshi_into_matchups(dg, kalshi)
+        kalshi_entry = dg[0]["odds"]["kalshi"]
+        dk_entry = dg[0]["odds"]["draftkings"]
+        # Same structure: {"p1": str, "p2": str}
+        assert set(kalshi_entry.keys()) == set(dk_entry.keys())
+        assert isinstance(kalshi_entry["p1"], str)
+        assert isinstance(kalshi_entry["p2"], str)

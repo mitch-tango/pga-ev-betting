@@ -278,3 +278,19 @@ These are minimal, targeted changes. The dead-heat per-book logic is handled sep
 - **Duplicate player names.** If Kalshi somehow has duplicate entries for the same player, take the first match. Log a warning if this happens.
 - **Price edge cases.** If a Kalshi record has `kalshi_mid_prob` of 0 or 1, skip it (cannot convert to finite American odds). The conversion functions from section-01 handle this by returning None/empty string.
 - **Non-standard market keys.** The merge function only processes known market mappings (`win`, `top_10`, `top_20`). Unknown keys in either dict are ignored.
+
+## Implementation Notes (Post-Build)
+
+### Actual Files Modified/Created
+- `src/pipeline/pull_kalshi.py` — added `merge_kalshi_into_outrights()` and `merge_kalshi_into_matchups()`
+- `src/core/edge.py` — 3 changes: import `kalshi_price_to_decimal`, ask-based bettable decimal for Kalshi in placement edges, exclude Kalshi from matchup consensus
+- `tests/test_pull_kalshi.py` — added 9 merge tests (6 outrights, 3 matchups) → 21 total
+- `tests/test_kalshi_edge.py` — added 9 edge behavior tests → 13 total
+
+### Deviations from Plan
+
+1. **Kelly sizing fix (from code review):** The plan only addressed `all_odds[book]` for reporting. Code review caught that `best_decimal` (used for Kelly sizing) also needs the ask-based decimal when Kalshi is best_book. Fixed by using `bettable_decimal` variable for both Kelly and all_odds.
+
+2. **Matchup consensus guard:** Added `if not book_p1_probs: continue` after excluding Kalshi, to handle edge case where Kalshi is the only book (would cause ZeroDivisionError).
+
+### Test Count: 33 passing (21 in test_pull_kalshi.py, 13 in test_kalshi_edge.py)

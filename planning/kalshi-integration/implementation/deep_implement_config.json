@@ -32,6 +32,10 @@
     "section-04-tournament-matching": {
       "status": "complete",
       "commit_hash": "74ef649"
+    },
+    "section-05-pipeline-pull": {
+      "status": "complete",
+      "commit_hash": "eb9cf9b"
     }
   },
   "pre_commit": {

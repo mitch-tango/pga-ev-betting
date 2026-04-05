@@ -23,6 +23,7 @@ from src.core.devig import (
     parse_american_odds, american_to_decimal, decimal_to_american,
     implied_prob_to_decimal, power_devig, devig_independent,
     devig_two_way, devig_three_way,
+    kalshi_price_to_decimal,
 )
 from src.core.blend import blend_probabilities, build_book_consensus
 from src.core.kelly import kelly_stake, get_correlation_haircut
@@ -220,16 +221,22 @@ def calculate_placement_edges(
                 continue
 
             raw_edge = your_prob - book_prob
-            decimal_odds = implied_prob_to_decimal(book_prob)
 
-            # Store all odds for reference (book name IS the column name)
-            all_odds[book] = american_to_decimal(str(player.get(book, "")))
+            # For Kalshi, use ask-based decimal (actual bettable price)
+            # for both Kelly sizing and all_book_odds display
+            if book == "kalshi" and "_kalshi_ask_prob" in player:
+                bettable_decimal = kalshi_price_to_decimal(
+                    str(player["_kalshi_ask_prob"]))
+                all_odds[book] = bettable_decimal
+            else:
+                bettable_decimal = implied_prob_to_decimal(book_prob)
+                all_odds[book] = american_to_decimal(str(player.get(book, "")))
 
             if raw_edge > best_edge:
                 best_edge = raw_edge
                 best_book = book
                 best_book_prob = book_prob
-                best_decimal = decimal_odds
+                best_decimal = bettable_decimal
 
         if best_edge <= 0 or best_decimal is None:
             continue
@@ -358,8 +365,12 @@ def calculate_matchup_edges(
         if not all_book_odds:
             continue
 
-        # Book consensus for blending
-        book_p1_probs = {b: d["p1_fair"] for b, d in all_book_odds.items()}
+        # Book consensus for blending (exclude Kalshi — prediction market,
+        # not a sportsbook; included for edge evaluation only)
+        book_p1_probs = {b: d["p1_fair"] for b, d in all_book_odds.items()
+                         if b != "kalshi"}
+        if not book_p1_probs:
+            continue
         book_consensus_p1 = sum(book_p1_probs.values()) / len(book_p1_probs)
 
         # Blend
