@@ -161,3 +161,16 @@ After implementation, all of the following should be true:
 10. All Polymarket URL, rate limit, volume, spread, and fee constants are present and correctly typed
 11. All ProphetX URL, credential, rate limit, OI, and spread constants are present
 12. Existing tests (especially `tests/test_kalshi_edge.py`) still pass -- the deprecated alias for `KALSHI_NO_DEADHEAT_BOOKS` prevents breakage
+
+## Implementation Notes
+
+**Files modified:** `config.py`
+**Files created:** `tests/test_config_prediction_markets.py`
+
+**Deviations from plan:** None — implemented exactly as specified.
+
+**Code review fixes applied:**
+- Added `_reload_config_after_env_tests` autouse fixture to prevent test isolation issues from `importlib.reload`
+- Added `test_reads_actual_env_var` test to verify `env_flag` reads from `os.environ` (not just default param)
+
+**Test count:** 29 tests passing. Existing `test_kalshi_edge.py` (17 tests) unaffected.

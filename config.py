@@ -11,6 +11,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def env_flag(name: str, default: str = "0") -> bool:
+    """Parse an environment variable as a boolean flag.
+
+    Returns True for "1", "true", "yes" (case-insensitive).
+    Returns False for everything else including "0", "false", "no", "".
+    """
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes")
+
+
 # --- DG API ---
 DG_API_KEY = os.getenv("DG_API_KEY")
 DG_BASE_URL = "https://feeds.datagolf.com"
@@ -29,8 +39,27 @@ KALSHI_SERIES_TICKERS = {
     "t20": "KXPGATOP20",
     "tournament_matchup": "KXPGAH2H",
 }
-# TODO: Polymarket — add POLYMARKET_BASE_URL, POLYMARKET_CLOB_URL, book weights here
-# Polymarket covers outrights + top-N but NOT matchups. Gamma API for discovery, CLOB for prices.
+
+# --- Polymarket ---
+POLYMARKET_GAMMA_URL = "https://gamma-api.polymarket.com"
+POLYMARKET_CLOB_URL = "https://clob.polymarket.com"
+POLYMARKET_RATE_LIMIT_DELAY = 0.1  # 100ms between calls (conservative vs 1,500 req/10s)
+POLYMARKET_MIN_VOLUME = 100  # Minimum market volume to include
+POLYMARKET_MAX_SPREAD_ABS = 0.10  # Absolute spread ceiling
+POLYMARKET_MAX_SPREAD_REL = 0.15  # Relative spread factor
+POLYMARKET_FEE_RATE = 0.002  # Taker fee applied to ask price for bettable cost
+POLYMARKET_GOLF_TAG_ID = os.getenv("POLYMARKET_GOLF_TAG_ID")
+POLYMARKET_MARKET_TYPES = {"win": "winner", "t10": "top-10", "t20": "top-20"}
+POLYMARKET_ENABLED = env_flag("POLYMARKET_ENABLED", "1")  # On by default (no auth needed)
+
+# --- ProphetX ---
+PROPHETX_BASE_URL = "https://cash.api.prophetx.co"
+PROPHETX_EMAIL = os.getenv("PROPHETX_EMAIL")
+PROPHETX_PASSWORD = os.getenv("PROPHETX_PASSWORD")
+PROPHETX_RATE_LIMIT_DELAY = 0.1  # Conservative (rate limits undocumented)
+PROPHETX_MIN_OPEN_INTEREST = 100  # Minimum OI threshold
+PROPHETX_MAX_SPREAD = 0.05  # Max bid-ask spread
+PROPHETX_ENABLED = bool(PROPHETX_EMAIL and PROPHETX_PASSWORD)  # Auto-enabled when credentials present
 
 # --- Supabase ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -76,15 +105,18 @@ BOOK_WEIGHTS = {
         "pinnacle": 2, "betcris": 2, "betonline": 2,
         "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
         "kalshi": 2,  # Sharp — prediction markets are efficient
+        "polymarket": 1, "prophetx": 1,
     },
     "placement": {
         "betonline": 1, "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
         "kalshi": 1,  # Equal weight for placement
+        "polymarket": 1, "prophetx": 1,
     },
     "make_cut": {
         "pinnacle": 2, "betcris": 2, "betonline": 2,
         "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
         # No kalshi — they don't offer make_cut
+        "prophetx": 1,  # Polymarket doesn't offer make_cut
     },
     # Matchups: equal-weighted average in edge.py (no weight dict needed),
     # but listed here for reference when Start outrights are added.
@@ -131,7 +163,8 @@ DEADHEAT_AVG_REDUCTION = {
 }
 
 # Books exempt from dead-heat adjustment (binary contract payout, no DH reduction)
-KALSHI_NO_DEADHEAT_BOOKS = {"kalshi"}
+NO_DEADHEAT_BOOKS = {"kalshi", "polymarket"}
+KALSHI_NO_DEADHEAT_BOOKS = NO_DEADHEAT_BOOKS  # Deprecated alias — removed in section 03
 
 # --- Signature Event ---
 SIGNATURE_PURSE_THRESHOLD = 20_000_000
