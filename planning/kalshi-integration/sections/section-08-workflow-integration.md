@@ -192,11 +192,36 @@ These comments should note that Polymarket covers outrights and top-N but not ma
 
 ---
 
+## Implementation Notes
+
+**Actual changes made:**
+
+1. **`scripts/run_pretournament.py`**: Added Kalshi imports, pull-and-merge block after DG pulls with try/except graceful degradation. Tournament name check added — skips Kalshi with a warning if `_event_name` is empty. Polymarket TODO comment added. `timedelta` imported at module top.
+
+2. **`scripts/run_preround.py`**: Added Kalshi imports, guard block with `kalshi_enabled = False` (disabled until live DG predictions exist). When enabled, pulls tournament matchups and merges into round data. Skip message printed when disabled. Polymarket TODO comment added. `timedelta` imported at module top.
+
+3. **`tests/test_kalshi_workflow.py`**: 7 tests covering pretournament Kalshi integration (import presence, call ordering, graceful degradation pattern, merge behavior, CandidateBet compatibility) and preround guard (source inspection for Kalshi presence, skip warning, imports). Tests use source inspection for workflow scripts due to complex dependency chain.
+
+4. **`tests/test_kalshi_degradation.py`**: 7 tests covering API unreachable, no golf events, tournament matching failure, empty merge no-ops, partial data handling, and rate limit handling. Tests exercise pull_kalshi functions directly with mocked KalshiClient.
+
+**Deviations from plan:**
+- Pull function signatures require `(tournament_name, tournament_start, tournament_end)` not just `(tournament_slug)` — implementation adapted
+- No `--kalshi` CLI flag added to preround (deferred: feature is disabled)
+- OI/spread threshold degradation tests replaced with merge-noop tests (OI/spread filtering already tested in `test_pull_kalshi.py`)
+- Workflow tests use source inspection pattern instead of full behavioral mocking (pragmatic for interactive CLI scripts)
+
+**Code review fixes applied:**
+- Moved `timedelta` import from inside try blocks to module-level
+- Added tournament name validation with clear warning message
+- Added comments documenting the 4-day tournament window
+
+---
+
 ## Summary Checklist
 
-1. Write `tests/test_kalshi_workflow.py` with `TestPreTournamentWithKalshi` (4 tests) and `TestPreRoundKalshiGuard` (3 tests)
-2. Write `tests/test_kalshi_degradation.py` with `TestGracefulDegradation` (7 tests)
-3. Modify `scripts/run_pretournament.py`: add imports, add Kalshi pull-and-merge block with try/except, add Polymarket TODO
-4. Modify `scripts/run_preround.py`: add imports, add Kalshi guard logic (skip if no live DG), add Polymarket TODO
-5. Verify all tests pass with mocked dependencies
-6. Verify existing DG-only flow is unaffected when Kalshi data is empty or unavailable
+1. `tests/test_kalshi_workflow.py` — 7 tests, all pass
+2. `tests/test_kalshi_degradation.py` — 7 tests, all pass
+3. `scripts/run_pretournament.py` modified with Kalshi block + Polymarket TODO
+4. `scripts/run_preround.py` modified with Kalshi guard + Polymarket TODO
+5. Full test suite: 304 tests pass, 0 failures
+6. DG-only flow unaffected when Kalshi data is empty or unavailable

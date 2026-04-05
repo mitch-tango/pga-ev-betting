@@ -160,6 +160,16 @@ Add TODO comments at the following locations:
 
 ---
 
+## Implementation Notes
+
+**Implemented as planned with one deviation:**
+
+- **blend.py fix:** Code review identified that `build_book_consensus` used `BOOK_WEIGHTS['win']` for make_cut markets instead of `BOOK_WEIGHTS['make_cut']`. Fixed so each market type uses its own weight dict. This ensures the "no kalshi in make_cut" invariant is actually enforced at the code path level.
+
+**Files modified:** `config.py`, `schema.sql`, `src/core/blend.py`
+**Files created:** `tests/test_kalshi_edge.py`
+**Tests:** 4 new tests in TestKalshiBookWeights, 240 total pass
+
 ## Verification Checklist
 
 After implementation, the following should hold:

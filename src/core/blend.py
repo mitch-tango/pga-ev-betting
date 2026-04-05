@@ -103,8 +103,10 @@ def build_book_consensus(book_probs: dict[str, float | None],
         Weighted consensus probability, or None if no valid books
     """
     # Determine which weight set to use
-    if market_type in ("win", "make_cut"):
+    if market_type == "win":
         weight_config = config.BOOK_WEIGHTS.get("win", {})
+    elif market_type == "make_cut":
+        weight_config = config.BOOK_WEIGHTS.get("make_cut", {})
     elif market_type in ("t5", "t10", "t20"):
         weight_config = config.BOOK_WEIGHTS.get("placement", {})
     else:

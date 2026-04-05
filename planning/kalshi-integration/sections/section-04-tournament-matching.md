@@ -192,6 +192,20 @@ For bulk resolution during a pipeline run, iterate over extracted names and coll
 
 ---
 
+## Implementation Notes
+
+**Implemented as planned with these deviations from code review:**
+
+- **PGA indicators trimmed:** Reduced from 30+ sponsor names to 6 core indicators per plan spec (pga, masters, u.s. open, us open, open championship, pga championship)
+- **Title normalization for fuzzy matching:** Added `_TITLE_STRIP_PATTERNS` to strip "PGA Tour:", "Winner", "Top N" from Kalshi titles before SequenceMatcher comparison
+- **H2H "beat" regex tightened:** Stops capturing at "in/at/during" to avoid grabbing trailing context
+- **Defensive dict access:** All `event["event_ticker"]` changed to `event.get("event_ticker")` with None checks
+- **Warning logs added:** `extract_player_name_outright` and `extract_player_names_h2h` now log warnings on parse failure
+- **Dead code removed:** Unused `_NAME_SUFFIXES` set removed
+
+**Files created:** `src/pipeline/kalshi_matching.py`, `tests/test_kalshi_matching.py`
+**Tests:** 16 tests (5 tournament matching, 5 name extraction, 6 name resolution), 256 total pass
+
 ## Error Handling
 
 All functions in this module follow the system's graceful degradation principle:

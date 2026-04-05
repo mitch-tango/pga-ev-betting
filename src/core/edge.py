@@ -23,6 +23,7 @@ from src.core.devig import (
     parse_american_odds, american_to_decimal, decimal_to_american,
     implied_prob_to_decimal, power_devig, devig_independent,
     devig_two_way, devig_three_way,
+    kalshi_price_to_decimal,
 )
 from src.core.blend import blend_probabilities, build_book_consensus
 from src.core.kelly import kelly_stake, get_correlation_haircut
@@ -205,11 +206,13 @@ def calculate_placement_edges(
         if your_prob is None or your_prob <= 0:
             continue
 
-        # Find the best book (highest edge = your_prob - book_implied_prob)
-        best_edge = -1
+        # Find the best book by adjusted edge (per-book dead-heat adjustment)
+        best_adjusted_edge = -1
         best_book = ""
         best_book_prob = 0
         best_decimal = 0
+        best_raw_edge = 0
+        best_dh_adj = 0.0
         all_odds = {}
 
         for book, devigged_list in book_devigged.items():
@@ -220,26 +223,38 @@ def calculate_placement_edges(
                 continue
 
             raw_edge = your_prob - book_prob
-            decimal_odds = implied_prob_to_decimal(book_prob)
 
-            # Store all odds for reference (book name IS the column name)
-            all_odds[book] = american_to_decimal(str(player.get(book, "")))
+            # For Kalshi, use ask-based decimal (actual bettable price)
+            # for both Kelly sizing and all_book_odds display
+            if book == "kalshi" and "_kalshi_ask_prob" in player:
+                bettable_decimal = kalshi_price_to_decimal(
+                    str(player["_kalshi_ask_prob"]))
+                all_odds[book] = bettable_decimal
+            else:
+                bettable_decimal = implied_prob_to_decimal(book_prob)
+                all_odds[book] = american_to_decimal(str(player.get(book, "")))
 
-            if raw_edge > best_edge:
-                best_edge = raw_edge
+            # Per-book dead-heat adjustment: Kalshi binary contracts
+            # pay full value on ties, so no DH reduction needed
+            if book in config.KALSHI_NO_DEADHEAT_BOOKS:
+                adj_edge = raw_edge
+                dh_adj = 0.0
+            else:
+                adj_edge, dh_adj = adjust_edge_for_deadheat(
+                    raw_edge, market_type, bettable_decimal)
+
+            if adj_edge > best_adjusted_edge:
+                best_adjusted_edge = adj_edge
                 best_book = book
                 best_book_prob = book_prob
-                best_decimal = decimal_odds
+                best_decimal = bettable_decimal
+                best_raw_edge = raw_edge
+                best_dh_adj = dh_adj
 
-        if best_edge <= 0 or best_decimal is None:
+        if best_adjusted_edge <= 0 or best_decimal is None:
             continue
 
-        # Dead-heat adjustment
-        adjusted_edge, dh_adj = adjust_edge_for_deadheat(
-            best_edge, market_type, best_decimal
-        )
-
-        if adjusted_edge < min_edge:
+        if best_adjusted_edge < min_edge:
             continue
 
         # Correlation haircut
@@ -247,7 +262,7 @@ def calculate_placement_edges(
 
         # Kelly sizing
         stake = kelly_stake(
-            adjusted_edge, best_decimal, bankroll,
+            best_adjusted_edge, best_decimal, bankroll,
             correlation_haircut=haircut,
         )
 
@@ -265,10 +280,10 @@ def calculate_placement_edges(
             best_odds_decimal=round(best_decimal, 4),
             best_odds_american=decimal_to_american(best_decimal),
             best_implied_prob=round(best_book_prob, 4),
-            raw_edge=round(best_edge, 4),
-            deadheat_adj=round(dh_adj, 4),
-            edge=round(adjusted_edge, 4),
-            kelly_fraction=round(adjusted_edge / (best_decimal - 1), 4)
+            raw_edge=round(best_raw_edge, 4),
+            deadheat_adj=round(best_dh_adj, 4),
+            edge=round(best_adjusted_edge, 4),
+            kelly_fraction=round(best_adjusted_edge / (best_decimal - 1), 4)
                 if best_decimal > 1 else None,
             correlation_haircut=haircut,
             suggested_stake=stake,
@@ -358,8 +373,12 @@ def calculate_matchup_edges(
         if not all_book_odds:
             continue
 
-        # Book consensus for blending
-        book_p1_probs = {b: d["p1_fair"] for b, d in all_book_odds.items()}
+        # Book consensus for blending (exclude Kalshi — prediction market,
+        # not a sportsbook; included for edge evaluation only)
+        book_p1_probs = {b: d["p1_fair"] for b, d in all_book_odds.items()
+                         if b != "kalshi"}
+        if not book_p1_probs:
+            continue
         book_consensus_p1 = sum(book_p1_probs.values()) / len(book_p1_probs)
 
         # Blend

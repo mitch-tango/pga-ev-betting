@@ -148,3 +148,21 @@ Every log message should clearly indicate it is Kalshi-related so it is distingu
 - **DG market key mapping.** The Kalshi series tickers map to DG market names differently: `KXPGATOUR` → `"win"`, `KXPGATOP10` → `"t10"`, `KXPGATOP20` → `"t20"`. The `config.KALSHI_SERIES_TICKERS` dict encodes this mapping. The pull function uses the DG-side key names (`"win"`, `"t10"`, `"t20"`) in its return dict so downstream consumers do not need to know about Kalshi ticker naming.
 
 - **Polymarket future note.** Leave a comment at the top of the module noting that a future `pull_polymarket_outrights()` would follow the same pattern but use keyword-based event discovery via the Gamma API instead of series ticker lookup.
+
+## Implementation Notes (Post-Build)
+
+### Actual Files Created
+- `src/pipeline/pull_kalshi.py` — as planned
+- `tests/test_pull_kalshi.py` — 12 tests (8 outrights, 4 matchups)
+
+### Deviations from Plan
+
+1. **Function signatures**: Both functions take explicit `tournament_name`, `tournament_start`, `tournament_end` params instead of just `tournament_slug`. This is because `match_tournament()` needs date/name info. The caller (workflow integration) will have this from the DG API response. `tournament_slug` is kept as an optional param for cache labeling only.
+
+2. **H2H contract handling**: Plan described grouping paired contracts by a common field. Implementation treats each H2H market as a single binary contract and derives P2 probability as the complement (1 - P1). This is correct for Kalshi's actual API structure where each H2H matchup is one binary market.
+
+3. **Per-market error isolation**: Code review led to wrapping each market_key (win/t10/t20) in its own try/except so a failure in one market doesn't wipe valid results from others.
+
+4. **Price validation**: Added `_normalize_price()` that returns None for zero/missing prices (prevents silent data corruption). Added `_detect_cent_format()` helper for batch-level format detection.
+
+### Test Count: 12 passing

@@ -20,6 +20,30 @@
     "section-01-odds-conversion": {
       "status": "complete",
       "commit_hash": "a3bc514"
+    },
+    "section-02-kalshi-client": {
+      "status": "complete",
+      "commit_hash": "35b944e"
+    },
+    "section-03-config-schema": {
+      "status": "complete",
+      "commit_hash": "ac02814"
+    },
+    "section-04-tournament-matching": {
+      "status": "complete",
+      "commit_hash": "74ef649"
+    },
+    "section-05-pipeline-pull": {
+      "status": "complete",
+      "commit_hash": "eb9cf9b"
+    },
+    "section-06-pipeline-merge": {
+      "status": "complete",
+      "commit_hash": "b7aeda5"
+    },
+    "section-07-edge-deadheat": {
+      "status": "complete",
+      "commit_hash": "05b9c7c"
     }
   },
   "pre_commit": {
