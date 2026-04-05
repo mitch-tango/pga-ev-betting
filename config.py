@@ -48,18 +48,16 @@ POLYMARKET_MIN_VOLUME = 100  # Minimum market volume to include
 POLYMARKET_MAX_SPREAD_ABS = 0.10  # Absolute spread ceiling
 POLYMARKET_MAX_SPREAD_REL = 0.15  # Relative spread factor
 POLYMARKET_FEE_RATE = 0.002  # Taker fee applied to ask price for bettable cost
-POLYMARKET_GOLF_TAG_ID = os.getenv("POLYMARKET_GOLF_TAG_ID")
+POLYMARKET_GOLF_TAG_ID = os.getenv("POLYMARKET_GOLF_TAG_ID", "100219")
 POLYMARKET_MARKET_TYPES = {"win": "winner", "t10": "top-10", "t20": "top-20"}
 POLYMARKET_ENABLED = env_flag("POLYMARKET_ENABLED", "1")  # On by default (no auth needed)
 
 # --- ProphetX ---
-PROPHETX_BASE_URL = "https://cash.api.prophetx.co"
-PROPHETX_EMAIL = os.getenv("PROPHETX_EMAIL")
-PROPHETX_PASSWORD = os.getenv("PROPHETX_PASSWORD")
+PROPHETX_BASE_URL = "https://www.prophetx.co"
 PROPHETX_RATE_LIMIT_DELAY = 0.1  # Conservative (rate limits undocumented)
 PROPHETX_MIN_OPEN_INTEREST = 100  # Minimum OI threshold
 PROPHETX_MAX_SPREAD = 0.05  # Max bid-ask spread
-PROPHETX_ENABLED = bool(PROPHETX_EMAIL and PROPHETX_PASSWORD)  # Auto-enabled when credentials present
+PROPHETX_ENABLED = env_flag("PROPHETX_ENABLED", "1")  # On by default (public API, no auth needed)
 
 # --- Supabase ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")

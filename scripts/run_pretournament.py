@@ -241,7 +241,7 @@ def _pull_prophetx_block(outrights, matchups, tournament_name, today, end_date,
                          tournament_slug=None):
     """Pull and merge ProphetX outrights + matchups. Graceful degradation."""
     if not config.PROPHETX_ENABLED:
-        print("\nProphetX: disabled (no credentials)")
+        print("\nProphetX: disabled")
         return
     print("\nPulling ProphetX odds...")
     try:

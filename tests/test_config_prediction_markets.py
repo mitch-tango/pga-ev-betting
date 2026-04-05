@@ -60,24 +60,19 @@ class TestPolymarketEnabled:
 
 
 class TestProphetxEnabled:
-    """PROPHETX_ENABLED auto-detects credentials."""
+    """PROPHETX_ENABLED uses env_flag (public API, on by default)."""
 
-    def test_disabled_without_credentials(self):
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("PROPHETX_EMAIL", "PROPHETX_PASSWORD")}
-        with patch.dict(os.environ, env, clear=True):
+    def test_enabled_by_default(self):
+        import config
+        importlib.reload(config)
+        assert config.PROPHETX_ENABLED is True
+
+    @patch("dotenv.load_dotenv", lambda *a, **kw: None)
+    def test_disabled_by_env(self):
+        with patch.dict(os.environ, {"PROPHETX_ENABLED": "0"}, clear=False):
             import config
             importlib.reload(config)
             assert config.PROPHETX_ENABLED is False
-
-    def test_enabled_with_credentials(self):
-        with patch.dict(os.environ, {
-            "PROPHETX_EMAIL": "test@example.com",
-            "PROPHETX_PASSWORD": "secret",
-        }):
-            import config
-            importlib.reload(config)
-            assert config.PROPHETX_ENABLED is True
 
 
 class TestBookWeights:
@@ -172,7 +167,7 @@ class TestProphetxConstants:
 
     def test_base_url(self):
         import config
-        assert config.PROPHETX_BASE_URL == "https://cash.api.prophetx.co"
+        assert config.PROPHETX_BASE_URL == "https://www.prophetx.co"
 
     def test_rate_limit_delay(self):
         import config

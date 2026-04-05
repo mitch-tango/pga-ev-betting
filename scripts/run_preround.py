@@ -175,7 +175,7 @@ def _pull_prophetx_matchup_block(matchups, tournament_name, today, end_date,
                                  tournament_slug=None):
     """Pull and merge ProphetX matchups. Graceful degradation on failure."""
     if not config.PROPHETX_ENABLED:
-        print("\nProphetX: disabled (no credentials)")
+        print("\nProphetX: disabled")
         return
     if not tournament_name:
         return

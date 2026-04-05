@@ -1,11 +1,12 @@
-"""ProphetX prediction market API client (authenticated).
+"""ProphetX prediction market API client (public endpoints).
 
-Uses JWT-based login with token refresh. Requires email/password
-credentials from config (env vars). Rate limited.
-Responses cached locally in data/raw/ — auth responses excluded.
+Uses ProphetX's public trade API — no authentication required.
+Rate limited. Responses cached locally in data/raw/.
 
-Follows the same patterns as KalshiClient (response envelopes, retry,
-caching) but adds an authentication layer.
+Endpoints:
+  GET /trade/public/api/v1/tournaments — list all tournaments
+  GET /trade/public/api/v1/tournaments/{id}/events — events for a tournament
+  GET /trade/public/api/v1/events/{id}/markets — markets/odds for an event
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -27,14 +28,21 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+# Known golf tournament IDs on ProphetX (speeds up discovery)
+_GOLF_TOURNAMENT_IDS = {
+    1600000234: "Golf Markets",
+    1600000195: "Golf Matchups",
+    1600000321: "Golf Props",
+    1600000306: "Golf Round Matchups",
+}
+
 
 class ProphetXClient:
-    """Client for the ProphetX prediction market API (authenticated).
+    """Client for the ProphetX public trade API.
 
-    Requires email/password credentials. Uses JWT auth with lazy login,
-    token refresh, and re-auth on 401.
+    No authentication required. Uses public endpoints for tournament,
+    event, and market data.
     Responses cached to data/raw/{tournament_slug}/{timestamp}/prophetx_*.json.
-    Auth responses are never cached.
     """
 
     def __init__(
@@ -42,21 +50,15 @@ class ProphetXClient:
         base_url: str | None = None,
         cache_dir: str | None = None,
     ):
-        self.base_url = base_url or getattr(
-            config, "PROPHETX_BASE_URL",
-            "https://cash.api.prophetx.co",
+        self.base_url = (
+            base_url
+            or getattr(config, "PROPHETX_BASE_URL", "https://www.prophetx.co")
         )
-        self.email = getattr(config, "PROPHETX_EMAIL", None)
-        self.password = getattr(config, "PROPHETX_PASSWORD", None)
+        self.public_api = f"{self.base_url}/trade/public/api/v1"
         self.rate_limit_delay = getattr(config, "PROPHETX_RATE_LIMIT_DELAY", 0.1)
         self.cache_dir = Path(cache_dir) if cache_dir else Path("data/raw")
         self.timeout = getattr(config, "API_TIMEOUT", 30)
         self.max_retries = getattr(config, "API_MAX_RETRIES", 3)
-
-        # Auth state (lazy init)
-        self.access_token: str | None = None
-        self.refresh_token: str | None = None
-        self.token_expiry: datetime | None = None
 
         # Session with persistent headers
         self.session = requests.Session()
@@ -65,139 +67,23 @@ class ProphetXClient:
     def __repr__(self) -> str:
         return f"ProphetXClient(base_url={self.base_url!r})"
 
-    # ── Authentication ──────────────────────────────────────────────
-
-    def _authenticate(self) -> dict:
-        """Full login via email/password.
-
-        Returns ok/error envelope. Never caches auth responses.
-        """
-        url = f"{self.base_url}/api/v1/auth/login"
-        try:
-            resp = self.session.post(
-                url,
-                json={"email": self.email, "password": self.password},
-                timeout=self.timeout,
-            )
-
-            if resp.status_code == 200:
-                data = resp.json()
-                self.access_token = data.get("access_token")
-                self.refresh_token = data.get("refresh_token")
-
-                expires_in = data.get("expires_in")
-                if expires_in:
-                    self.token_expiry = (
-                        datetime.now(timezone.utc)
-                        + timedelta(seconds=int(expires_in))
-                        - timedelta(minutes=5)
-                    )
-                else:
-                    self.token_expiry = datetime.now(timezone.utc) + timedelta(minutes=55)
-
-                return {"status": "ok", "data": data}
-
-            return {
-                "status": "error",
-                "code": resp.status_code,
-                "message": resp.text[:500],
-            }
-
-        except requests.exceptions.RequestException as e:
-            # Redact any credentials that may appear in the exception
-            err_msg = str(e)
-            if self.password:
-                err_msg = err_msg.replace(self.password, "[REDACTED]")
-            logger.warning("ProphetX auth failed: %s", err_msg)
-            return {"status": "error", "code": None, "message": err_msg}
-
-    def _refresh_auth(self) -> dict:
-        """Refresh the access token using the refresh token.
-
-        Falls back to full _authenticate() if refresh fails.
-        """
-        url = f"{self.base_url}/api/v1/auth/extend-session"
-        try:
-            resp = self.session.post(
-                url,
-                headers={"Authorization": f"Bearer {self.refresh_token}"},
-                timeout=self.timeout,
-            )
-
-            if resp.status_code == 200:
-                data = resp.json()
-                self.access_token = data.get("access_token")
-                if data.get("refresh_token"):
-                    self.refresh_token = data["refresh_token"]
-
-                expires_in = data.get("expires_in")
-                if expires_in:
-                    self.token_expiry = (
-                        datetime.now(timezone.utc)
-                        + timedelta(seconds=int(expires_in))
-                        - timedelta(minutes=5)
-                    )
-                else:
-                    self.token_expiry = datetime.now(timezone.utc) + timedelta(minutes=55)
-
-                return {"status": "ok", "data": data}
-
-        except requests.exceptions.RequestException as e:
-            logger.info("ProphetX refresh request error: %s", type(e).__name__)
-
-        # Refresh failed — fall back to full login
-        logger.info("ProphetX token refresh failed, re-authenticating")
-        return self._authenticate()
-
-    def _ensure_auth(self) -> None:
-        """Ensure we have a valid access token. Lazy init or refresh."""
-        if self.access_token is None:
-            self._authenticate()
-        elif self.token_expiry and datetime.now(timezone.utc) > self.token_expiry:
-            self._refresh_auth()
-
-    # ── API Call ���───────────────────────────────────────────────────
+    # ── API Call ────────────────────────────────────────────────────
 
     def _api_call(
         self,
-        endpoint: str,
+        url: str,
         params: dict | None = None,
-        method: str = "GET",
     ) -> dict:
-        """Make an authenticated API request with retry logic.
+        """Make a public API request with retry logic.
 
         Returns:
             {"status": "ok", "data": <response>} or
             {"status": "error", "code": int|None, "message": str}
         """
-        self._ensure_auth()
-
-        url = f"{self.base_url}{endpoint}"
-
-        result = self._api_call_inner(url, params, method)
-
-        # On 401, re-authenticate once and retry the full call
-        if result.get("code") == 401:
-            logger.info("ProphetX 401 — re-authenticating")
-            self._authenticate()
-            result = self._api_call_inner(url, params, method)
-
-        return result
-
-    def _api_call_inner(
-        self,
-        url: str,
-        params: dict | None,
-        method: str,
-    ) -> dict:
-        """Inner retry loop for API calls."""
         for attempt in range(self.max_retries):
             try:
-                headers = {"Authorization": f"Bearer {self.access_token}"}
-
-                resp = self.session.request(
-                    method, url, params=params, headers=headers,
-                    timeout=self.timeout,
+                resp = self.session.get(
+                    url, params=params, timeout=self.timeout,
                 )
 
                 if resp.status_code == 200:
@@ -206,9 +92,6 @@ class ProphetXClient:
                         return {"status": "ok", "data": resp.json()}
                     except json.JSONDecodeError:
                         return {"status": "ok", "data": resp.text}
-
-                elif resp.status_code == 401:
-                    return {"status": "error", "code": 401, "message": "Unauthorized"}
 
                 elif resp.status_code == 429:
                     wait = (attempt + 1) * 5
@@ -250,13 +133,7 @@ class ProphetXClient:
         label: str,
         tournament_slug: str | None = None,
     ) -> Path | None:
-        """Cache API response to local filesystem.
-
-        Skips auth-related labels to prevent tokens/credentials on disk.
-        """
-        if "auth" in label.lower():
-            return None
-
+        """Cache API response to local filesystem."""
         date_str = datetime.now().strftime("%Y-%m-%d_%H%M")
         if tournament_slug:
             cache_path = self.cache_dir / tournament_slug / date_str
@@ -273,42 +150,95 @@ class ProphetXClient:
 
     # ── Public Methods ──────────────────────────────────────────────
 
-    def get_golf_events(self) -> list[dict]:
-        """Fetch active golf events from ProphetX.
+    def get_tournaments(self) -> list[dict]:
+        """Fetch all available tournaments from ProphetX.
 
-        Returns list of event dicts. Empty list on failure.
+        Returns list of tournament dicts. Empty list on failure.
         """
-        response = self._api_call("/api/v1/sports/golf/events")
+        response = self._api_call(
+            f"{self.public_api}/tournaments",
+            params={"limit": "500"},
+        )
 
         if response["status"] == "ok":
             data = response["data"]
+            if isinstance(data, dict):
+                return data.get("data", {}).get("tournaments", [])
             if isinstance(data, list):
                 return data
-            if isinstance(data, dict):
-                return data.get("events", data.get("data", []))
-            logger.warning("ProphetX: unexpected golf events response shape: %s", type(data).__name__)
 
-        else:
-            logger.warning("ProphetX: golf events request failed: %s", response.get("message", ""))
-
+        logger.warning("ProphetX: tournaments request failed: %s",
+                       response.get("message", ""))
         return []
+
+    def get_golf_events(self) -> list[dict]:
+        """Fetch active golf events from ProphetX.
+
+        Uses known golf tournament IDs for fast lookup, with fallback
+        to keyword-based discovery from the full tournament list.
+
+        Returns list of event dicts. Empty list on failure.
+        """
+        # Start with known golf tournament IDs
+        golf_ids = set(_GOLF_TOURNAMENT_IDS.keys())
+
+        # Also discover from full tournament list
+        tournaments = self.get_tournaments()
+        golf_keywords = ("golf", "pga", "masters", "open championship",
+                         "us open", "ryder cup", "valero", "players")
+        for t in tournaments:
+            name = (t.get("name") or "").lower()
+            if any(kw in name for kw in golf_keywords):
+                t_id = t.get("id")
+                if t_id:
+                    golf_ids.add(t_id)
+
+        if not golf_ids:
+            logger.info("ProphetX: no golf tournaments found")
+            return []
+
+        # Fetch events for each golf tournament
+        all_events = []
+        for t_id in golf_ids:
+            response = self._api_call(
+                f"{self.public_api}/tournaments/{t_id}/events",
+            )
+            if response["status"] == "ok":
+                data = response["data"]
+                if isinstance(data, dict):
+                    events = data.get("data", [])
+                elif isinstance(data, list):
+                    events = data
+                else:
+                    events = []
+                all_events.extend(events)
+
+        return all_events
 
     def get_markets_for_events(self, event_ids: list[str]) -> list[dict]:
         """Fetch markets for specific event IDs.
 
-        Returns list of market dicts with line_id, odds, competitor info.
-        Empty list on failure.
+        Each market represents a player with YES/NO selections at various
+        odds levels (orderbook style).
+
+        Returns list of market dicts. Empty list on failure.
         """
-        all_markets = []
+        all_markets: list[dict] = []
 
         for event_id in event_ids:
-            response = self._api_call(f"/api/v1/events/{event_id}/markets")
+            response = self._api_call(
+                f"{self.public_api}/events/{event_id}/markets",
+            )
             if response["status"] == "ok":
                 data = response["data"]
-                if isinstance(data, list):
-                    all_markets.extend(data)
-                elif isinstance(data, dict):
-                    markets = data.get("markets", data.get("data", []))
-                    all_markets.extend(markets)
+                if isinstance(data, dict):
+                    markets = data.get("data", {}).get("markets", [])
+                    if not markets:
+                        markets = data.get("markets", [])
+                elif isinstance(data, list):
+                    markets = data
+                else:
+                    markets = []
+                all_markets.extend(markets)
 
         return all_markets
