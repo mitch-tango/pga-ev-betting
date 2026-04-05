@@ -141,11 +141,25 @@ import config
 2. **Graceful degradation**: All functions return empty results on failure, never raise.
 3. **Make-cut stretch goal**: If classify_markets discovers make_cut, include under `"make_cut"` key.
 
+## Implementation Notes
+
+### Files Created
+- `src/pipeline/pull_prophetx.py` — 4 public functions + format detection helpers
+- `tests/test_pull_prophetx.py` — 23 tests
+
+### Deviations from Plan
+- **binary_midpoint**: Used `binary_midpoint()` from devig module (as specified in Key Imports) with string args, falling back to odds_val when bid/ask unavailable
+- **make_cut stretch goal**: Skipped — only win/t10/t20 implemented
+- **OI/spread filters**: Skip filter when field absent (rather than defaulting to 0) to avoid silently passing/filtering all competitors
+- **_classify_odds_value**: Simplified to unified int/float branch with bool exclusion (avoids dead code from separate int check)
+- **Caching**: Caches processed results (matches Polymarket pattern), not raw API responses
+- **Return type**: Sparse returns (`{}` on empty) rather than always returning all three keys
+
 ## Verification Checklist
 
-1. Format detection handles int, float, and string odds types
-2. `_prophetx_ask_prob` only set for binary format
-3. American format stored directly without binary conversion
-4. Matchup merge uses frozenset matching
-5. All exceptions caught, empty results returned
-6. `uv run pytest tests/test_pull_prophetx.py` passes
+1. Format detection handles int, float, and string odds types ✓
+2. `_prophetx_ask_prob` only set for binary format ✓
+3. American format stored directly without binary conversion ✓
+4. Matchup merge uses frozenset matching ✓
+5. All exceptions caught, empty results returned ✓
+6. `uv run pytest tests/test_pull_prophetx.py` — 23 passed ✓

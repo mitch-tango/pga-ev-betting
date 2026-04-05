@@ -47,6 +47,10 @@
     "section-07-prophetx-client": {
       "status": "complete",
       "commit_hash": "ad5030f"
+    },
+    "section-08-prophetx-matching": {
+      "status": "complete",
+      "commit_hash": "cb1be84"
     }
   },
   "pre_commit": {
