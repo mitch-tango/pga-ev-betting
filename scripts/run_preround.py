@@ -225,12 +225,14 @@ def main():
         for u in unmatched:
             print(f"    ? {u['p1_name']} vs {u['p2_name']}")
 
-    # Kalshi tournament matchups (guard: skip if no live DG model)
+    # Kalshi tournament matchups: enabled when live DG model is available.
     # Kalshi tournament-long prices reflect in-tournament performance.
-    # Comparing live Kalshi prices against stale pre-tournament DG would
-    # create false-positive edges, so we skip unless live DG is available.
-    # For now, live DG predictions are not yet implemented, so always skip.
-    kalshi_enabled = False  # TODO: set True when get_live_predictions() exists
+    # We pull DG live predictions to avoid comparing stale DG vs live Kalshi.
+    from src.pipeline.pull_live import pull_live_predictions
+    live_data = pull_live_predictions(args.tournament, args.tour)
+    kalshi_enabled = len(live_data) > 0
+    if live_data:
+        print(f"  DG live model: {len(live_data)} players — Kalshi comparison enabled")
     if kalshi_enabled:
         try:
             today = datetime.now().strftime("%Y-%m-%d")
@@ -252,7 +254,7 @@ def main():
         except Exception as e:
             print(f"  Warning: Kalshi unavailable ({e}), proceeding without")
     else:
-        print("  Skipping Kalshi tournament markets (no live DG model — stale model risk)")
+        print("  Skipping Kalshi tournament markets (no live DG data available)")
 
     # TODO: Polymarket integration — pull_polymarket_outrights() would follow
     # the same pattern here. Polymarket covers win/T10/T20 but NOT matchups.

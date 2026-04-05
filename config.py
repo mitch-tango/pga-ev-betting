@@ -49,6 +49,11 @@ ALERT_PREROUND_HOUR = 7        # 7 AM ET Thu-Sun
 ALERT_HIGH_EDGE_THRESHOLD = 0.08  # 8%+ edge gets @role mention
 ALERT_ENABLED = bool(os.getenv("DISCORD_ALERT_CHANNEL_ID", ""))
 
+# --- Live Monitoring ---
+LIVE_MONITOR_INTERVAL_MIN = 15    # Minutes between live scans during rounds
+LIVE_MONITOR_START_HOUR = 8      # Start monitoring at 8 AM ET
+LIVE_MONITOR_END_HOUR = 19       # Stop monitoring at 7 PM ET
+
 # --- Blend Weights ---
 # Win/placement weights from OAD backtest (278 events, 2020-2026).
 # Matchup weights from 99-event backtest (19,996 records, 2022-2026).

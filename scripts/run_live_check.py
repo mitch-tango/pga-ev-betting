@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 """
-Live spot-check — exploratory edge detection during rounds.
+Live edge detection — automated edge finding during rounds.
 
 Usage:
-    python scripts/run_live_check.py [--dry-run] [--tour pga]
+    python scripts/run_live_check.py [--dry-run] [--tour pga] [--round N]
 
-IMPORTANT: Live betting is EXPLORATORY in v1 (Amendment #6).
-- Edge threshold is 8% (vs 3-5% for pre-tournament)
-- Book odds may be stale — ALWAYS manually verify before placing
-- Only act on edges that are clearly large enough to survive line movement
+Combines DG's live in-play model with current book odds to find edges.
+The live model updates every ~5 minutes during rounds and reflects actual
+on-course performance — books are often slower to adjust.
+
+For fully manual spot-checking (just DG probabilities, no edge calc),
+use the Discord bot's /live command.
 """
 
 import sys
@@ -20,118 +22,161 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse
 from datetime import datetime
 
-from src.pipeline.pull_live import pull_live_predictions
-from src.core.devig import parse_american_odds, implied_prob_to_decimal, decimal_to_american, american_to_decimal
+from src.pipeline.pull_live_edges import pull_live_edges
+from src.core.devig import american_to_decimal
 from src.db import supabase_client as db
 import config
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Live in-play edge spot-check")
+    parser = argparse.ArgumentParser(description="Live in-play edge detection")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--tour", default="pga")
     parser.add_argument("--tournament", default=None)
+    parser.add_argument("--round", type=int, default=None,
+                        help="Round number (1-4)")
+    parser.add_argument("--no-kalshi", action="store_true",
+                        help="Skip Kalshi odds")
+    parser.add_argument("--no-matchups", action="store_true",
+                        help="Skip round matchups and 3-balls")
     args = parser.parse_args()
 
-    bankroll = db.get_bankroll()
-    min_edge = config.MIN_EDGE["live"]  # 8%
-
-    print(f"=== Live Spot-Check ({args.tour.upper()}) ===")
+    print(f"=== Live Edge Detection ({args.tour.upper()}) ===")
     print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"Edge threshold: {min_edge*100:.0f}% (EXPLORATORY)")
-    print(f"Bankroll: ${bankroll:.2f}")
+    print(f"Edge threshold: {config.MIN_EDGE['live']*100:.0f}% (live)")
     print()
 
-    # Pull DG live predictions
-    print("Pulling DG live predictions...")
-    live_data = pull_live_predictions(args.tournament, args.tour)
-
-    if not live_data:
-        print("No live data available (tournament may not be in progress).")
-        return
-
-    print(f"  {len(live_data)} players in live model")
-
-    # Display players where DG's live T20 probability is notably high
-    # These are the ones where stale book odds might still offer value
-    print(f"\n{'--- DG Live T20 Probabilities (Top 30) ---':^60}")
-    print(f" {'#':>3}  {'Player':<25} {'Win%':>6} {'T5%':>6} {'T20%':>6} {'MC%':>6}")
-
-    # Sort by T20 probability
-    sorted_players = sorted(
-        live_data,
-        key=lambda p: p.get("top_20", p.get("t20", 0)) or 0,
-        reverse=True,
+    print("Running live edge scan...")
+    candidates, tournament_name, stats = pull_live_edges(
+        tour=args.tour,
+        tournament_slug=args.tournament,
+        include_kalshi=not args.no_kalshi,
+        include_matchups=not args.no_matchups,
+        round_number=args.round,
     )
 
-    for i, player in enumerate(sorted_players[:30], 1):
-        name = player.get("player_name", "Unknown")
-        win_pct = (player.get("win", 0) or 0) * 100
-        t5_pct = (player.get("top_5", player.get("t5", 0)) or 0) * 100
-        t20_pct = (player.get("top_20", player.get("t20", 0)) or 0) * 100
-        mc_pct = (player.get("make_cut", player.get("mc", 0)) or 0) * 100
+    print(f"\nTournament: {tournament_name}")
+    print(f"DG live model: {stats.get('live_players', 0)} players")
+    print(f"Matched to book odds: {stats.get('matched', 0)}")
+    if stats.get("kalshi_merged"):
+        print("Kalshi: merged")
+    elif stats.get("kalshi_error"):
+        print(f"Kalshi: unavailable ({stats['kalshi_error'][:60]})")
+    print(f"Bankroll: ${stats.get('bankroll', 0):,.2f}")
 
-        print(f" {i:>3}  {name:<25} {win_pct:>5.1f}% {t5_pct:>5.1f}% "
-              f"{t20_pct:>5.1f}% {mc_pct:>5.1f}%")
+    # Show edge breakdown
+    for key in ("win_edges", "t10_edges", "t20_edges", "make_cut_edges",
+                "matchup_edges", "3ball_edges"):
+        if key in stats:
+            print(f"  {key.replace('_', ' ').title()}: {stats[key]}")
 
-    print(f"\n{'--- How to Use ---':^60}")
-    print(f"1. Compare DG's T20% above against the current book line")
-    print(f"2. If DG T20% exceeds book implied prob by {min_edge*100:.0f}%+, "
-          f"consider betting")
-    print(f"3. MANUALLY verify the book's current odds before placing")
-    print(f"4. Log the bet using the interactive prompt below")
+    if not candidates:
+        print("\nNo live edges found above threshold.")
+        return
 
-    if not args.dry_run:
-        print(f"\nLog a live bet? [y/N]: ", end="")
+    print(f"\n{len(candidates)} live edge(s) found:\n")
+    print(f" {'#':>3}  {'Player':<22} {'Market':<8} {'Best Book':<12} "
+          f"{'Odds':>7} {'Your%':>6} {'Book%':>6} {'Edge':>6} "
+          f"{'Stake':>6}")
+    print(f" {'—'*3}  {'—'*22} {'—'*8} {'—'*12} {'—'*7} {'—'*6} {'—'*6} "
+          f"{'—'*6} {'—'*6}")
+
+    for i, c in enumerate(candidates, 1):
+        if c.opponent_name:
+            display_name = f"{c.player_name[:10]} v {c.opponent_name[:10]}"
+        else:
+            display_name = c.player_name[:22]
+
+        mkt = c.market_type
+        if c.round_number:
+            mkt = f"R{c.round_number} " + ("3B" if c.market_type == "3_ball" else "H2H")
+
+        print(f" {i:>3}  {display_name:<22} {mkt:<8} "
+              f"{c.best_book:<12} {c.best_odds_american:>7} "
+              f"{c.your_prob*100:>5.1f}% {c.best_implied_prob*100:>5.1f}% "
+              f"{c.edge*100:>5.1f}% ${c.suggested_stake:>4.0f}")
+
+    print(f"\nIMPORTANT: VERIFY book odds are still available before placing.")
+
+    if not args.dry_run and candidates:
+        print(f"\nLog a live bet? Enter numbers (e.g., 1,3) or 'skip': ", end="")
         response = input().strip()
 
-        if response.lower() in ("y", "yes"):
-            player_name = input("  Player name: ").strip()
-            market_type = input("  Market (t20/t10/t5/win): ").strip()
-            book = input("  Book: ").strip()
-            odds_str = input("  Odds (American): ").strip()
-            your_prob_str = input("  Your probability (from DG above, e.g., 0.45): ").strip()
-            stake_str = input("  Stake: $").strip()
-            notes = input("  Notes: ").strip() or None
+        if response.lower() in ("skip", "s", ""):
+            print("Skipped.")
+            return
 
-            try:
-                actual_decimal = american_to_decimal(odds_str)
-                actual_implied = 1.0 / actual_decimal if actual_decimal else 0
-                your_prob = float(your_prob_str)
-                stake = float(stake_str)
-                edge = your_prob - actual_implied
+        try:
+            indices = [int(x.strip()) - 1 for x in response.split(",")]
+        except ValueError:
+            print("Invalid input. Skipping.")
+            return
 
-                if edge < min_edge:
-                    print(f"  Warning: edge is only {edge*100:.1f}% "
-                          f"(below {min_edge*100:.0f}% threshold)")
-                    print(f"  Place anyway? [y/N]: ", end="")
-                    if input().strip().lower() not in ("y", "yes"):
-                        print("  Skipped.")
-                        return
+        for idx in indices:
+            if idx < 0 or idx >= len(candidates):
+                print(f"Invalid number: {idx + 1}")
+                continue
 
-                bet = db.insert_bet(
-                    candidate_id=None,
-                    tournament_id=None,
-                    market_type=market_type,
-                    player_name=player_name,
-                    book=book,
-                    odds_at_bet_decimal=actual_decimal,
-                    odds_at_bet_american=odds_str,
-                    implied_prob_at_bet=actual_implied,
-                    your_prob=your_prob,
-                    edge=edge,
-                    stake=stake,
-                    is_live=True,
-                    notes=notes,
-                )
+            c = candidates[idx]
+            display = c.player_name
+            if c.opponent_name:
+                display = f"{c.player_name} vs {c.opponent_name}"
 
-                if bet:
-                    print(f"  ✓ Logged LIVE bet: {player_name} {market_type} "
-                          f"@ {book} {odds_str}, ${stake:.0f}, "
-                          f"edge {edge*100:.1f}%")
-            except (ValueError, TypeError) as e:
-                print(f"  Error: {e}")
-    else:
+            print(f"\n--- Bet #{idx+1}: {display} {c.market_type} — "
+                  f"{c.best_book} {c.best_odds_american} ---")
+
+            actual_odds_str = input(
+                f"  Actual odds? [{c.best_odds_american}]: "
+            ).strip()
+            if not actual_odds_str:
+                actual_odds_str = c.best_odds_american
+
+            actual_decimal = american_to_decimal(actual_odds_str)
+            if actual_decimal is None:
+                print("  Invalid odds. Skipping.")
+                continue
+
+            actual_implied = 1.0 / actual_decimal if actual_decimal > 0 else 0
+            actual_edge = c.your_prob - actual_implied
+
+            if actual_edge <= 0:
+                print(f"  Edge gone at {actual_odds_str}. Skipping.")
+                continue
+
+            stake_str = input(f"  Stake? [${c.suggested_stake:.0f}]: ").strip()
+            stake = float(stake_str) if stake_str else c.suggested_stake
+
+            notes = input("  Notes: ").strip() or "live edge"
+
+            bet = db.insert_bet(
+                candidate_id=None,
+                tournament_id=stats.get("tournament_id"),
+                market_type=c.market_type,
+                player_name=c.player_name,
+                book=c.best_book,
+                odds_at_bet_decimal=actual_decimal,
+                odds_at_bet_american=actual_odds_str,
+                implied_prob_at_bet=actual_implied,
+                your_prob=c.your_prob,
+                edge=actual_edge,
+                stake=stake,
+                scanned_odds_decimal=c.best_odds_decimal,
+                player_id=c.player_id,
+                opponent_name=c.opponent_name,
+                opponent_id=c.opponent_id,
+                opponent_2_name=c.opponent_2_name,
+                opponent_2_id=c.opponent_2_id,
+                round_number=c.round_number,
+                correlation_haircut=c.correlation_haircut,
+                is_live=True,
+                notes=notes,
+            )
+
+            if bet:
+                print(f"  ✓ Logged LIVE: {display} @ {c.best_book} "
+                      f"{actual_odds_str}, ${stake:.0f}, edge {actual_edge*100:.1f}%")
+
+    elif args.dry_run:
         print("\n[DRY RUN — no bets logged]")
 
 

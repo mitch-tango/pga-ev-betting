@@ -38,6 +38,7 @@ from src.pipeline.pull_matchups import (
     pull_3balls,
 )
 from src.pipeline.pull_live import pull_live_predictions
+from src.pipeline.pull_live_edges import pull_live_edges
 from src.pipeline.pull_results import fetch_results, match_bets_to_results
 from src.core.settlement import settle_placement_bet
 import config
@@ -69,6 +70,9 @@ class EVBot(discord.Client):
         self.last_scan_tournament_id: str | None = None
         self.last_scan_time: datetime | None = None
         self._alert_task: asyncio.Task | None = None
+        self._live_monitor_task: asyncio.Task | None = None
+        self._live_monitor_active: bool = False
+        self._live_alerted_keys: set[str] = set()  # Avoid duplicate alerts
 
     async def setup_hook(self):
         await self.tree.sync()
@@ -210,6 +214,146 @@ class EVBot(discord.Client):
 
         await channel.send(content=f"{mention}{len(high_edge)} high-edge bet(s) found!" if mention else None, embed=embed)
 
+    # ------------------------------------------------------------------
+    # Live round monitoring
+    # ------------------------------------------------------------------
+    async def start_live_monitor(self, channel=None, tour: str = "pga",
+                                  round_number: int | None = None):
+        """Start the live monitoring loop."""
+        if self._live_monitor_active:
+            return False  # Already running
+        self._live_monitor_active = True
+        self._live_alerted_keys.clear()
+        self._live_monitor_task = self.loop.create_task(
+            self._live_monitor_loop(channel, tour, round_number)
+        )
+        log.info("Live monitor started (R%s)", round_number or "?")
+        return True
+
+    async def stop_live_monitor(self):
+        """Stop the live monitoring loop."""
+        self._live_monitor_active = False
+        if self._live_monitor_task and not self._live_monitor_task.done():
+            self._live_monitor_task.cancel()
+        self._live_alerted_keys.clear()
+        log.info("Live monitor stopped")
+
+    async def _live_monitor_loop(self, channel, tour: str, round_number: int | None):
+        """Poll for live edges at configured interval."""
+        await self.wait_until_ready()
+
+        if channel is None:
+            channel = self.get_channel(config.DISCORD_ALERT_CHANNEL_ID)
+        if not channel:
+            log.warning("No channel for live monitor")
+            self._live_monitor_active = False
+            return
+
+        interval = config.LIVE_MONITOR_INTERVAL_MIN * 60
+
+        while self._live_monitor_active and not self.is_closed():
+            now_et = datetime.now(ET)
+
+            # Only run during tournament hours
+            if now_et.hour < config.LIVE_MONITOR_START_HOUR or now_et.hour >= config.LIVE_MONITOR_END_HOUR:
+                log.info("Live monitor outside hours (%s ET), sleeping", now_et.strftime("%H:%M"))
+                await asyncio.sleep(interval)
+                continue
+
+            try:
+                candidates, tournament_name, stats = await asyncio.to_thread(
+                    pull_live_edges, tour=tour, round_number=round_number,
+                )
+            except Exception as e:
+                log.error("Live monitor scan failed: %s", e)
+                await asyncio.sleep(interval)
+                continue
+
+            if not candidates:
+                log.info("Live monitor: no edges (%d live players)", stats.get("live_players", 0))
+                await asyncio.sleep(interval)
+                continue
+
+            # Filter to only new candidates (avoid re-alerting same bet)
+            new_candidates = []
+            for c in candidates:
+                key = f"{c.player_name}|{c.market_type}|{c.best_book}"
+                if key not in self._live_alerted_keys:
+                    self._live_alerted_keys.add(key)
+                    new_candidates.append(c)
+
+            if not new_candidates:
+                log.info("Live monitor: %d edges but all previously alerted", len(candidates))
+                await asyncio.sleep(interval)
+                continue
+
+            # Cache for /place
+            self.last_scan = candidates
+            self.last_scan_tournament_id = stats.get("tournament_id")
+            self.last_scan_time = datetime.now()
+
+            # Build alert embed
+            high_edge = [c for c in new_candidates if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
+            color = 0xE74C3C if high_edge else 0xF39C12
+
+            embed = discord.Embed(
+                title=f"LIVE Edge Alert — {tournament_name}",
+                description=(
+                    f"**{len(new_candidates)}** new live edge(s) detected\n"
+                    f"DG live model: {stats.get('live_players', '?')} players | "
+                    f"Matched: {stats.get('matched', '?')}\n"
+                    f"Bankroll: ${stats.get('bankroll', 0):,.2f}"
+                ),
+                color=color,
+                timestamp=datetime.now(),
+            )
+
+            lines = []
+            lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
+            for i, c in enumerate(new_candidates, 1):
+                if c.opponent_name:
+                    name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
+                else:
+                    name = c.player_name[:20]
+
+                mkt = c.market_type
+                if c.round_number:
+                    mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
+
+                lines.append(
+                    f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
+                    f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
+                )
+
+                if len("\n".join(lines)) > 900:
+                    embed.add_field(
+                        name="Live Edges" if len(embed.fields) == 0 else "\u200b",
+                        value=f"```\n" + "\n".join(lines) + "\n```",
+                        inline=False,
+                    )
+                    lines = []
+
+            if lines:
+                embed.add_field(
+                    name="Live Edges" if len(embed.fields) == 0 else "\u200b",
+                    value=f"```\n" + "\n".join(lines) + "\n```",
+                    inline=False,
+                )
+
+            embed.set_footer(text=f"Use /place <number> to log | Next check in {config.LIVE_MONITOR_INTERVAL_MIN}min")
+
+            mention = ""
+            if high_edge and config.DISCORD_ALERT_ROLE_ID:
+                mention = f"<@&{config.DISCORD_ALERT_ROLE_ID}> "
+
+            await channel.send(
+                content=f"{mention}LIVE: {len(new_candidates)} new edge(s)!" if mention else None,
+                embed=embed,
+            )
+
+            await asyncio.sleep(interval)
+
+        self._live_monitor_active = False
 
 
 bot = EVBot()
@@ -260,6 +404,154 @@ async def cmd_alert(
     # Manual trigger — run scan and post alert to this channel
     await interaction.followup.send(f"Running {action.value} scan...")
     await bot._run_and_alert(action.value, round_number=round_number, tour=tour, channel=interaction.channel)
+
+
+# ---------------------------------------------------------------------------
+# /monitor — live round monitoring
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="monitor", description="Start/stop live round monitoring")
+@app_commands.describe(
+    action="Start or stop live monitoring",
+    round_number="Current round number (1-4)",
+    tour="Tour (default: pga)",
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="Start monitoring", value="start"),
+    app_commands.Choice(name="Stop monitoring", value="stop"),
+    app_commands.Choice(name="Run one live scan now", value="once"),
+    app_commands.Choice(name="Show monitor status", value="status"),
+])
+async def cmd_monitor(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+    round_number: Optional[int] = None,
+    tour: Optional[str] = "pga",
+):
+    await interaction.response.defer()
+
+    if action.value == "status":
+        status_lines = [
+            f"**Active:** {bot._live_monitor_active}",
+            f"**Interval:** {config.LIVE_MONITOR_INTERVAL_MIN} min",
+            f"**Hours:** {config.LIVE_MONITOR_START_HOUR}:00-{config.LIVE_MONITOR_END_HOUR}:00 ET",
+            f"**Alerted edges this session:** {len(bot._live_alerted_keys)}",
+        ]
+        if bot.last_scan_time:
+            status_lines.append(
+                f"**Last scan:** {bot.last_scan_time.strftime('%H:%M')} "
+                f"({len(bot.last_scan)} candidates)"
+            )
+        embed = discord.Embed(
+            title="Live Monitor Status",
+            description="\n".join(status_lines),
+            color=0x2ECC71 if bot._live_monitor_active else 0x95A5A6,
+        )
+        await interaction.followup.send(embed=embed)
+        return
+
+    if action.value == "stop":
+        if not bot._live_monitor_active:
+            await interaction.followup.send("Live monitor is not running.")
+            return
+        await bot.stop_live_monitor()
+        await interaction.followup.send("Live monitor stopped.")
+        return
+
+    if action.value == "start":
+        if bot._live_monitor_active:
+            await interaction.followup.send("Live monitor is already running.")
+            return
+        started = await bot.start_live_monitor(
+            channel=interaction.channel,
+            tour=tour,
+            round_number=round_number,
+        )
+        if started:
+            await interaction.followup.send(
+                f"Live monitor started — scanning every "
+                f"{config.LIVE_MONITOR_INTERVAL_MIN} min "
+                f"(R{round_number or '?'}, {config.LIVE_MONITOR_START_HOUR}:00-"
+                f"{config.LIVE_MONITOR_END_HOUR}:00 ET). "
+                f"Use `/monitor stop` to stop."
+            )
+        return
+
+    if action.value == "once":
+        await interaction.followup.send("Running one-time live edge scan...")
+        try:
+            candidates, tournament_name, stats = await asyncio.to_thread(
+                pull_live_edges, tour=tour, round_number=round_number,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"Live scan failed: {e}")
+            return
+
+        if not candidates:
+            embed = discord.Embed(
+                title=f"Live Scan — {tournament_name}",
+                description=(
+                    f"No live edges found.\n"
+                    f"DG live model: {stats.get('live_players', 0)} players | "
+                    f"Matched to books: {stats.get('matched', 0)}"
+                ),
+                color=0x95A5A6,
+                timestamp=datetime.now(),
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        # Cache for /place
+        bot.last_scan = candidates
+        bot.last_scan_tournament_id = stats.get("tournament_id")
+        bot.last_scan_time = datetime.now()
+
+        bankroll = stats.get("bankroll", 0)
+        embed = discord.Embed(
+            title=f"Live Scan — {tournament_name}",
+            description=(
+                f"**{len(candidates)}** live edges found\n"
+                f"DG live: {stats.get('live_players', 0)} players | "
+                f"Matched: {stats.get('matched', 0)} | "
+                f"Bankroll: ${bankroll:,.2f}"
+            ),
+            color=0xE67E22,
+            timestamp=datetime.now(),
+        )
+
+        lines = []
+        lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
+        for i, c in enumerate(candidates, 1):
+            if c.opponent_name:
+                name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
+            else:
+                name = c.player_name[:20]
+
+            mkt = c.market_type
+            if c.round_number:
+                mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
+
+            lines.append(
+                f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
+                f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
+            )
+
+            if len("\n".join(lines)) > 900:
+                embed.add_field(
+                    name="Live Edges" if len(embed.fields) == 0 else "\u200b",
+                    value=f"```\n" + "\n".join(lines) + "\n```",
+                    inline=False,
+                )
+                lines = []
+
+        if lines:
+            embed.add_field(
+                name="Live Edges" if len(embed.fields) == 0 else "\u200b",
+                value=f"```\n" + "\n".join(lines) + "\n```",
+                inline=False,
+            )
+
+        embed.set_footer(text="Use /place <number> to log a bet | VERIFY ODDS BEFORE PLACING")
+        await interaction.followup.send(embed=embed)
 
 
 # ---------------------------------------------------------------------------
