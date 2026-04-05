@@ -130,3 +130,24 @@ with patch("src.pipeline.pull_polymarket.PolymarketClient") as mock_cls:
 uv run pytest tests/test_prediction_market_workflow.py -v
 uv run pytest -v  # full suite for regression check
 ```
+
+## Implementation Notes
+
+### Actual Files Created
+| File | Purpose |
+|------|---------|
+| `tests/conftest.py` | Shared fixture factories (Polymarket events/markets/books, ProphetX events/markets/matchups) — available for all test files |
+| `tests/test_prediction_market_workflow.py` | 19 integration tests across 5 test classes |
+
+### Deviations from Plan
+- Fixture factories in `conftest.py` are kept as shared infrastructure for future adoption by other test files (e.g. `test_polymarket_client.py`). The integration test file uses its own local helpers (`_dg_field`, `_kalshi_outrights`, `_polymarket_outrights`, `_prophetx_outrights`) which better match the integration test style of directly building merge-ready dicts.
+- Dead-heat correctness tests not duplicated here — already thoroughly covered in `tests/test_edge_prediction_markets.py::TestDeadHeatBypass`.
+- File reads in structural tests use `Path(mod.__file__).read_text()` instead of bare `open()` to avoid file handle leaks.
+
+### Test Count: 19 tests (555 total suite, 0 failures)
+
+### Code Review Fixes Applied
+1. Strengthened weak assertions (`isinstance` → also check `len > 0`)
+2. Removed overly permissive assertion fallbacks
+3. Fixed file handle leaks (`open()` → `Path.read_text()`)
+4. Added favorable DG odds to ensure edge calculation produces candidates

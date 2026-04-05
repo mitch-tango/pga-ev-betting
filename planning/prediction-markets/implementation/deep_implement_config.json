@@ -55,6 +55,10 @@
     "section-09-prophetx-pull": {
       "status": "complete",
       "commit_hash": "589271e"
+    },
+    "section-10-workflow": {
+      "status": "complete",
+      "commit_hash": "ef2de75"
     }
   },
   "pre_commit": {
