@@ -23,6 +23,10 @@
     "section-01-config": {
       "status": "complete",
       "commit_hash": "d9221b9"
+    },
+    "section-02-devig-refactor": {
+      "status": "complete",
+      "commit_hash": "ae995e0"
     }
   },
   "pre_commit": {

@@ -123,10 +123,10 @@ class TestNoDeadheatBooks:
         import config
         assert "prophetx" not in config.NO_DEADHEAT_BOOKS
 
-    def test_deprecated_alias_still_works(self):
-        """Backward compat: KALSHI_NO_DEADHEAT_BOOKS still exists."""
+    def test_deprecated_alias_removed(self):
+        """KALSHI_NO_DEADHEAT_BOOKS alias was removed in section 03."""
         import config
-        assert config.KALSHI_NO_DEADHEAT_BOOKS is config.NO_DEADHEAT_BOOKS
+        assert not hasattr(config, "KALSHI_NO_DEADHEAT_BOOKS")
 
 
 class TestPolymarketConstants:

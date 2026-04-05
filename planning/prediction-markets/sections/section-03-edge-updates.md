@@ -145,24 +145,21 @@ if book == "kalshi" and "_kalshi_ask_prob" in player:
     all_odds[book] = bettable_decimal
 ```
 
-Replace with a generalized check:
+Replace with a generalized check (actual implementation after code review):
 ```python
 ask_key = f"_{book}_ask_prob"
-if ask_key in player:
-    ask_val = player[ask_key]
-    # Validate: must be numeric and in (0, 1)
-    if isinstance(ask_val, (int, float)) and 0 < float(ask_val) < 1:
-        bettable_decimal = binary_price_to_decimal(str(ask_val))
-        all_odds[book] = bettable_decimal
-    else:
-        # Invalid ask prob -- fall back to standard pricing
-        import logging
-        logging.getLogger(__name__).warning(
+ask_val = player.get(ask_key)
+if (ask_val is not None
+        and isinstance(ask_val, (int, float))
+        and not isinstance(ask_val, bool)
+        and 0 < float(ask_val) < 1):
+    bettable_decimal = binary_price_to_decimal(str(ask_val))
+    all_odds[book] = bettable_decimal
+else:
+    if ask_val is not None:
+        logger.warning(
             "Invalid %s value %r for %s, using standard pricing",
             ask_key, ask_val, player.get("player_name", "unknown"))
-        bettable_decimal = implied_prob_to_decimal(book_prob)
-        all_odds[book] = american_to_decimal(str(player.get(book, "")))
-else:
     bettable_decimal = implied_prob_to_decimal(book_prob)
     all_odds[book] = american_to_decimal(str(player.get(book, "")))
 ```
@@ -171,6 +168,7 @@ Key points:
 - The pattern `f"_{book}_ask_prob"` produces `_kalshi_ask_prob`, `_polymarket_ask_prob`, `_prophetx_ask_prob` automatically.
 - Validation prevents crashes from bad values. Fallback uses standard pricing path.
 - `binary_price_to_decimal` is the renamed version from section-02-devig-refactor.
+- Code review fix: consolidated duplicated fallback into single else block, added bool guard, module-level logger.
 
 ### Change 3: Update Import in `edge.py`
 
@@ -203,5 +201,8 @@ ProphetX may return American odds directly. When American, the merge step (secti
 3. `edge.py` uses the generalized `f"_{book}_ask_prob"` pattern
 4. `edge.py` imports `binary_price_to_decimal`
 5. Ask probability validation rejects values outside (0, 1) with a logged warning
-6. All existing Kalshi edge tests pass without modification (regression)
+6. All existing Kalshi edge tests pass (minor update: `KALSHI_NO_DEADHEAT_BOOKS` → `NO_DEADHEAT_BOOKS` in test)
+7. `KALSHI_NO_DEADHEAT_BOOKS` deprecated alias removed from config.py
+8. 15 new tests in `tests/test_edge_prediction_markets.py` (dead-heat bypass, ask-based pricing, validation, multi-market)
+9. 61 total tests pass across edge + config test files
 7. New tests for Polymarket and ProphetX dead-heat and ask-based pricing pass

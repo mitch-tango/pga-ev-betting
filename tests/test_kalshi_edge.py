@@ -190,9 +190,9 @@ class TestKalshiDeadHeatBypass:
     """Dead-heat adjustment is skipped when best_book is Kalshi for placement markets."""
 
     def test_kalshi_no_deadheat_books_config_exists(self):
-        """KALSHI_NO_DEADHEAT_BOOKS config set exists and contains 'kalshi'."""
-        assert hasattr(config, "KALSHI_NO_DEADHEAT_BOOKS")
-        assert "kalshi" in config.KALSHI_NO_DEADHEAT_BOOKS
+        """NO_DEADHEAT_BOOKS config set exists and contains 'kalshi'."""
+        assert hasattr(config, "NO_DEADHEAT_BOOKS")
+        assert "kalshi" in config.NO_DEADHEAT_BOOKS
 
     def test_kalshi_t10_no_deadheat_adj(self):
         """When best_book is 'kalshi' and market is t10, deadheat_adj should be 0.0."""

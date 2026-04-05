@@ -19,16 +19,20 @@ ready for insertion into the candidate_bets Supabase table.
 from dataclasses import dataclass, asdict
 from typing import Any
 
+import logging
+
 from src.core.devig import (
     parse_american_odds, american_to_decimal, decimal_to_american,
     implied_prob_to_decimal, power_devig, devig_independent,
     devig_two_way, devig_three_way,
-    kalshi_price_to_decimal,
+    binary_price_to_decimal,
 )
 from src.core.blend import blend_probabilities, build_book_consensus
 from src.core.kelly import kelly_stake, get_correlation_haircut
 from src.core.settlement import adjust_edge_for_deadheat
 import config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -224,19 +228,28 @@ def calculate_placement_edges(
 
             raw_edge = your_prob - book_prob
 
-            # For Kalshi, use ask-based decimal (actual bettable price)
-            # for both Kelly sizing and all_book_odds display
-            if book == "kalshi" and "_kalshi_ask_prob" in player:
-                bettable_decimal = kalshi_price_to_decimal(
-                    str(player["_kalshi_ask_prob"]))
+            # For prediction markets with ask-based pricing, use the
+            # _{book}_ask_prob value for bettable decimal (actual cost).
+            # This covers kalshi, polymarket, prophetx, and any future market.
+            ask_key = f"_{book}_ask_prob"
+            ask_val = player.get(ask_key)
+            if (ask_val is not None
+                    and isinstance(ask_val, (int, float))
+                    and not isinstance(ask_val, bool)
+                    and 0 < float(ask_val) < 1):
+                bettable_decimal = binary_price_to_decimal(str(ask_val))
                 all_odds[book] = bettable_decimal
             else:
+                if ask_val is not None:
+                    logger.warning(
+                        "Invalid %s value %r for %s, using standard pricing",
+                        ask_key, ask_val, player.get("player_name", "unknown"))
                 bettable_decimal = implied_prob_to_decimal(book_prob)
                 all_odds[book] = american_to_decimal(str(player.get(book, "")))
 
-            # Per-book dead-heat adjustment: Kalshi binary contracts
+            # Per-book dead-heat adjustment: binary contract markets
             # pay full value on ties, so no DH reduction needed
-            if book in config.KALSHI_NO_DEADHEAT_BOOKS:
+            if book in config.NO_DEADHEAT_BOOKS:
                 adj_edge = raw_edge
                 dh_adj = 0.0
             else:

@@ -164,7 +164,6 @@ DEADHEAT_AVG_REDUCTION = {
 
 # Books exempt from dead-heat adjustment (binary contract payout, no DH reduction)
 NO_DEADHEAT_BOOKS = {"kalshi", "polymarket"}
-KALSHI_NO_DEADHEAT_BOOKS = NO_DEADHEAT_BOOKS  # Deprecated alias — removed in section 03
 
 # --- Signature Event ---
 SIGNATURE_PURSE_THRESHOLD = 20_000_000
