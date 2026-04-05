@@ -121,11 +121,20 @@ Thin wrapper: `resolve_player(name, source="prophetx", auto_create=auto_create)`
 4. **Dynamic classification**: Markets classified after retrieval (unlike Kalshi's pre-classified series tickers)
 5. **Returns event dict**: Not ticker string — downstream code needs event ID
 
+## Deviations from Original Plan
+
+1. **Player name extraction excludes market 'name' field from fallback**: Direct market field fallback skips the 'name' field (which is the market title) to avoid extracting market names as player names.
+
+## Files Created/Modified
+
+- `src/pipeline/prophetx_matching.py` (created)
+- `tests/test_prophetx_matching.py` (created)
+
 ## Verification Checklist
 
 1. Tournament matching uses date range overlap with multiple field name attempts
 2. Fuzzy threshold is 0.85
-3. Non-PGA tours excluded
+3. Non-PGA tours excluded (exclusion-only, same as Polymarket)
 4. Market classifier handles outright, matchup, make_cut, t10, t20
-5. Player extraction tries multiple field names
-6. `uv run pytest tests/test_prophetx_matching.py` passes
+5. Player extraction tries competitors array then direct market fields
+6. 18 tests passing: `uv run pytest tests/test_prophetx_matching.py`
