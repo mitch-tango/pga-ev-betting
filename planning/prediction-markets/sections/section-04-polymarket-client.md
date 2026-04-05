@@ -151,6 +151,9 @@ Fetches full orderbook data from CLOB API. **Chunks into batches of 50 token_ids
 1. `PolymarketClient()` initializes with correct config defaults
 2. `_api_call` uses correct base_url for Gamma vs CLOB calls
 3. `get_books` chunks 100+ token_ids into batches of 50
-4. `get_golf_tag_id` caches on instance and falls back to env var
-5. All pagination, retry, and caching behavior matches Kalshi patterns
-6. `uv run pytest tests/test_polymarket_client.py` passes
+4. `get_midpoints` also chunks (added during code review)
+5. Token IDs serialized as comma-separated strings (code review fix)
+6. `get_golf_tag_id` caches on instance and falls back to env var
+7. All pagination, retry, and caching behavior matches Kalshi patterns
+8. Uses `logging` module instead of `print()` (improvement over KalshiClient)
+9. 26 tests pass in `tests/test_polymarket_client.py`

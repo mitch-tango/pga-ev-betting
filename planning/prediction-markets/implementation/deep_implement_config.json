@@ -27,6 +27,10 @@
     "section-02-devig-refactor": {
       "status": "complete",
       "commit_hash": "ae995e0"
+    },
+    "section-03-edge-updates": {
+      "status": "complete",
+      "commit_hash": "e31f2b1"
     }
   },
   "pre_commit": {
