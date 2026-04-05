@@ -35,6 +35,10 @@
     "section-04-polymarket-client": {
       "status": "complete",
       "commit_hash": "113bdbe"
+    },
+    "section-05-polymarket-matching": {
+      "status": "complete",
+      "commit_hash": "66c63b2"
     }
   },
   "pre_commit": {

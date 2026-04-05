@@ -139,12 +139,23 @@ Key helpers: `_identify_yes_token(market)`, `_best_bid(orderbook)`, `_best_ask(o
 | Fee adjustment | None | `ask + POLYMARKET_FEE_RATE` |
 | Matchups | Supported | Not supported |
 
+## Deviations from Original Plan
+
+1. **One-sided orderbooks skipped**: Plan said "if no bids → bid=0; if no asks → ask=1.0". Implementation skips markets with only one side, since the resulting midpoints are not market-informed and would mislead edge calculations.
+2. **Fee-adjusted ask clamped**: `min(1.0, ask + fee)` prevents invalid probabilities >1.0.
+3. **Spread filter always applied**: No bypass for one-sided books (moot since they're skipped).
+
+## Files Created/Modified
+
+- `src/pipeline/pull_polymarket.py` (created)
+- `tests/test_pull_polymarket.py` (created)
+
 ## Verification Checklist
 
 1. YES token identified by outcome label, not index
-2. Empty orderbook sides handled (bid=0, ask=1.0)
+2. One-sided orderbooks skipped (require both bids and asks)
 3. Relative spread filter applied
-4. Fee rate added to ask prob
+4. Fee rate added to ask prob, clamped to ≤1.0
 5. Merge adds both `"polymarket"` and `"_polymarket_ask_prob"` keys
 6. No `pull_polymarket_matchups` function exists
-7. `uv run pytest tests/test_pull_polymarket.py` passes
+7. 18 tests passing: `uv run pytest tests/test_pull_polymarket.py`
