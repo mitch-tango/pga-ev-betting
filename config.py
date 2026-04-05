@@ -115,6 +115,9 @@ DEADHEAT_AVG_REDUCTION = {
     "t20": 0.038,   # ~3.8%
 }
 
+# Books exempt from dead-heat adjustment (binary contract payout, no DH reduction)
+KALSHI_NO_DEADHEAT_BOOKS = {"kalshi"}
+
 # --- Signature Event ---
 SIGNATURE_PURSE_THRESHOLD = 20_000_000
 

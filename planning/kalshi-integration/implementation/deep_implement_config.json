@@ -36,6 +36,10 @@
     "section-05-pipeline-pull": {
       "status": "complete",
       "commit_hash": "eb9cf9b"
+    },
+    "section-06-pipeline-merge": {
+      "status": "complete",
+      "commit_hash": "b7aeda5"
     }
   },
   "pre_commit": {

@@ -1,5 +1,7 @@
 """Tests for Kalshi book weight configuration, consensus integration, and edge behavior."""
 
+from unittest.mock import patch
+
 import config
 from src.core.blend import build_book_consensus
 from src.core.devig import (
@@ -161,3 +163,137 @@ class TestKalshiAllBookOdds:
         mid_decimal = kalshi_price_to_decimal("0.05")
         ask_decimal = kalshi_price_to_decimal("0.06")
         assert ask_decimal < mid_decimal
+
+
+def _make_placement_field(num_players=20, dk_odds="+350", kalshi_odds="+340",
+                          dg_baseline="+1900"):
+    """Helper: build a minimal outrights field for calculate_placement_edges.
+
+    Args:
+        dg_baseline: American odds string for DG model probability
+            (e.g., "+1900" for ~5% implied, "+2400" for ~4% implied).
+    """
+    players = []
+    for i in range(num_players):
+        p = {
+            "player_name": f"Player {i}",
+            "dg_id": str(i),
+            "datagolf": {"baseline_history_fit": dg_baseline},
+            "draftkings": dk_odds,
+            "kalshi": kalshi_odds,
+        }
+        players.append(p)
+    return players
+
+
+class TestKalshiDeadHeatBypass:
+    """Dead-heat adjustment is skipped when best_book is Kalshi for placement markets."""
+
+    def test_kalshi_no_deadheat_books_config_exists(self):
+        """KALSHI_NO_DEADHEAT_BOOKS config set exists and contains 'kalshi'."""
+        assert hasattr(config, "KALSHI_NO_DEADHEAT_BOOKS")
+        assert "kalshi" in config.KALSHI_NO_DEADHEAT_BOOKS
+
+    def test_kalshi_t10_no_deadheat_adj(self):
+        """When best_book is 'kalshi' and market is t10, deadheat_adj should be 0.0."""
+        # Mock blend to return a prob that creates edges for both books,
+        # with Kalshi having a better adjusted edge (DH bypass)
+        players = _make_placement_field(dk_odds="+350", kalshi_odds="+340")
+        with patch("src.core.edge.blend_probabilities", return_value=0.30), \
+             patch("src.core.edge.build_book_consensus", return_value=0.25):
+            results = calculate_placement_edges(players, "t10", bankroll=10000)
+        kalshi_bets = [r for r in results if r.best_book == "kalshi"]
+        assert len(kalshi_bets) > 0, "Expected at least one bet with kalshi as best_book"
+        for bet in kalshi_bets:
+            assert bet.deadheat_adj == 0.0
+
+    def test_kalshi_t20_no_deadheat_adj(self):
+        """When best_book is 'kalshi' and market is t20, deadheat_adj should be 0.0."""
+        players = _make_placement_field(dk_odds="+350", kalshi_odds="+340")
+        with patch("src.core.edge.blend_probabilities", return_value=0.30), \
+             patch("src.core.edge.build_book_consensus", return_value=0.25):
+            results = calculate_placement_edges(players, "t20", bankroll=10000)
+        kalshi_bets = [r for r in results if r.best_book == "kalshi"]
+        assert len(kalshi_bets) > 0, "Expected at least one bet with kalshi as best_book"
+        for bet in kalshi_bets:
+            assert bet.deadheat_adj == 0.0
+
+    def test_sportsbook_t10_has_deadheat_adj(self):
+        """When best_book is 'draftkings' and market is t10, deadheat_adj < 0."""
+        # Create a heterogeneous field where Player 0 has great DK odds
+        # but poor Kalshi odds, so DK wins best_book despite DH penalty.
+        # Player 0: DK +1500 (implied ~0.063), Kalshi +150 (implied ~0.40)
+        # After devig, DK prob for P0 is much lower -> bigger raw edge from DK.
+        # Other players fill the field with moderate odds.
+        players = []
+        # Player 0: target player — great DK odds, poor Kalshi odds
+        players.append({
+            "player_name": "Target Player",
+            "dg_id": "0",
+            "datagolf": {"baseline_history_fit": "+300"},
+            "draftkings": "+1500",
+            "kalshi": "+150",
+        })
+        # Remaining 19 players with moderate odds
+        for i in range(1, 20):
+            players.append({
+                "player_name": f"Player {i}",
+                "dg_id": str(i),
+                "datagolf": {"baseline_history_fit": "+500"},
+                "draftkings": "+400",
+                "kalshi": "+400",
+            })
+
+        with patch("src.core.edge.blend_probabilities", return_value=0.60), \
+             patch("src.core.edge.build_book_consensus", return_value=0.30):
+            results = calculate_placement_edges(players, "t10", bankroll=10000)
+        # Find the target player's bet — DK should win because its devigged
+        # prob is much lower (~0.03), giving a raw edge of ~0.57, while
+        # Kalshi devigged prob is ~0.20, raw edge ~0.40.
+        # DK adj = 0.57 - 0.044 = 0.526, Kalshi adj = 0.40 -> DK wins.
+        target = [r for r in results if r.player_name == "Target Player"]
+        assert len(target) > 0, "Expected Target Player in results"
+        bet = target[0]
+        assert bet.best_book == "draftkings", f"Expected draftkings but got {bet.best_book}"
+        assert bet.deadheat_adj < 0.0
+        assert bet.deadheat_adj == round(-config.DEADHEAT_AVG_REDUCTION["t10"], 4)
+
+    def test_kalshi_wins_best_book_via_dh_advantage(self):
+        """Kalshi wins 'best book' over a sportsbook with better raw odds due to DH advantage.
+
+        Scenario: DK has slightly better raw odds but after DH adjustment,
+        Kalshi's effective edge is higher because DH adj = 0.
+        """
+        # We need DK to have better raw edge but worse adjusted edge.
+        # Use mocking to control the blended probability precisely.
+        # your_prob = 0.30
+        # DK implied = 0.22 -> raw_edge = 0.08, DH adj = -0.044, effective = 0.036
+        # Kalshi implied = 0.23 -> raw_edge = 0.07, DH adj = 0.0, effective = 0.07
+        # -> Kalshi should win
+
+        # Build a field with controlled de-vigged probabilities
+        # We'll patch blend_probabilities and build_book_consensus to return
+        # known values, and set up book_devigged to give us the probs we want.
+        players = []
+        for i in range(20):
+            players.append({
+                "player_name": f"Player {i}",
+                "dg_id": str(i),
+                "datagolf": {"baseline_history_fit": "+250"},  # ~0.286
+                "draftkings": "+350",  # implied ~0.222
+                "kalshi": "+340",      # implied ~0.227
+            })
+
+        with patch("src.core.edge.blend_probabilities", return_value=0.30), \
+             patch("src.core.edge.build_book_consensus", return_value=0.25):
+            results = calculate_placement_edges(players, "t10", bankroll=10000)
+
+        # Every player should have kalshi as best_book because:
+        # DK: raw ~0.08, adjusted ~0.036
+        # Kalshi: raw ~0.07, adjusted = 0.07 (no DH)
+        assert len(results) > 0, "Expected candidates"
+        for bet in results:
+            assert bet.best_book == "kalshi", (
+                f"Expected kalshi as best_book but got {bet.best_book} "
+                f"(raw_edge={bet.raw_edge}, edge={bet.edge}, dh_adj={bet.deadheat_adj})"
+            )

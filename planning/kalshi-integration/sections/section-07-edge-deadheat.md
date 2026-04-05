@@ -168,10 +168,31 @@ This structural advantage is the primary reason to integrate Kalshi for placemen
 
 ---
 
+## Implementation Notes
+
+**Actual changes made:**
+
+1. **`config.py`**: Added `KALSHI_NO_DEADHEAT_BOOKS = {"kalshi"}` set after `DEADHEAT_AVG_REDUCTION` (line 119).
+
+2. **`src/core/edge.py`** (`calculate_placement_edges`, lines 209-258): Restructured the best-book selection loop:
+   - Renamed tracking variables: `best_edge` → `best_adjusted_edge`, added `best_raw_edge`, `best_dh_adj`
+   - Moved dead-heat adjustment inside the per-book loop with `config.KALSHI_NO_DEADHEAT_BOOKS` exemption check
+   - Best book selected by `adj_edge` (post-DH) rather than `raw_edge`
+   - `CandidateBet` fields populated with `best_raw_edge`, `best_dh_adj`, `best_adjusted_edge`
+   - Kelly sizing and min_edge threshold use `best_adjusted_edge`
+
+3. **`tests/test_kalshi_edge.py`**: Added `TestKalshiDeadHeatBypass` class with 5 tests (plan specified 4; added config existence check). Tests use `unittest.mock.patch` on `blend_probabilities` and `build_book_consensus` for controlled probability inputs. `test_sportsbook_t10_has_deadheat_adj` uses a heterogeneous field to ensure DK wins best_book despite DH penalty.
+
+**Code review fix applied:** Changed `_make_placement_field` helper to accept American odds strings for `dg_baseline` (default `"+1900"`) instead of bare floats, which were misinterpreted by `parse_american_odds`.
+
+**No changes to:** `settlement.py`, `calculate_matchup_edges()`, `calculate_3ball_edges()` — as planned.
+
+---
+
 ## Verification Checklist
 
-1. All four `TestKalshiDeadHeatBypass` tests pass.
-2. Existing tests in `tests/test_settlement.py` still pass (no regressions in settlement logic).
+1. All five `TestKalshiDeadHeatBypass` tests pass.
+2. Full test suite passes (290 tests, 0 failures) — no regressions in settlement or other logic.
 3. For non-Kalshi books in T10/T20 markets, behavior is identical to before (same DH adjustment values).
 4. For "win" and "make_cut" markets, no change in behavior (DH adjustment is already 0.0 for these).
 5. The `KALSHI_NO_DEADHEAT_BOOKS` config set is defined and contains `"kalshi"`.
