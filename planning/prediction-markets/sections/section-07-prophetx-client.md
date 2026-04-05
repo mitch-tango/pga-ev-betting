@@ -139,11 +139,23 @@ Follow `src/api/kalshi.py` structure:
 - `_cache_response()` writes to `data/raw/` with prefix
 - Error handling uses logging, never raises to callers
 
+## Deviations from Original Plan
+
+1. **401 handling separated from retry loop**: Re-auth on 401 uses a separate `_api_call_inner` method so the 401 retry doesn't consume from the retry budget.
+2. **Credential redaction in auth error logs**: Passwords stripped from exception messages before logging.
+3. **Public methods log failures**: `get_golf_events()` and `get_markets_for_events()` log warnings on error or unexpected response shapes.
+
+## Files Created/Modified
+
+- `src/api/prophetx.py` (created)
+- `tests/test_prophetx_client.py` (created)
+
 ## Verification Checklist
 
 1. Auth flow: lazy init → token refresh → re-auth on 401
 2. Token expiry reads `expires_in` from response, falls back to 55min
 3. Auth responses never cached to disk
 4. User-Agent header set on session
-5. Same retry/backoff/envelope pattern as Kalshi
-6. `uv run pytest tests/test_prophetx_client.py` passes
+5. Credential redaction in error logs
+6. 401 re-auth does not consume retry budget
+7. 22 tests passing: `uv run pytest tests/test_prophetx_client.py`

@@ -39,6 +39,10 @@
     "section-05-polymarket-matching": {
       "status": "complete",
       "commit_hash": "66c63b2"
+    },
+    "section-06-polymarket-pull": {
+      "status": "complete",
+      "commit_hash": "413fd23"
     }
   },
   "pre_commit": {
