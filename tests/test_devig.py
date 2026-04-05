@@ -17,6 +17,9 @@ from src.core.devig import (
     kalshi_price_to_american,
     kalshi_price_to_decimal,
     kalshi_midpoint,
+    binary_price_to_american,
+    binary_price_to_decimal,
+    binary_midpoint,
 )
 
 
@@ -338,3 +341,70 @@ class TestKalshiRoundTrip:
         american = kalshi_price_to_american('0.95')
         recovered = parse_american_odds(american)
         assert abs(recovered - 0.95) < 0.002
+
+
+# ---- Generic Binary Contract Name Tests ----
+
+class TestBinaryGenericNames:
+    """Verify generic names produce identical output to Kalshi-specific names."""
+
+    def test_price_to_american_equivalence(self):
+        for val in ("0.06", "0.30", "0.50", "0.55", "0.95"):
+            assert binary_price_to_american(val) == kalshi_price_to_american(val)
+
+    def test_price_to_decimal_equivalence(self):
+        for val in ("0.06", "0.30", "0.50", "0.55"):
+            assert binary_price_to_decimal(val) == kalshi_price_to_decimal(val)
+
+    def test_midpoint_equivalence(self):
+        assert binary_midpoint("0.04", "0.06") == kalshi_midpoint("0.04", "0.06")
+
+    def test_aliases_backward_compat(self):
+        assert kalshi_price_to_american("0.30") != ""
+        assert kalshi_price_to_decimal("0.30") is not None
+        assert kalshi_midpoint("0.04", "0.06") is not None
+
+    def test_binary_price_to_american_zero(self):
+        assert binary_price_to_american("0.0") == ""
+
+    def test_binary_price_to_american_one(self):
+        assert binary_price_to_american("1.0") == ""
+
+    def test_binary_price_to_american_half(self):
+        assert binary_price_to_american("0.5") == "+100"
+
+    def test_binary_price_to_american_string_input(self):
+        result = binary_price_to_american("0.30")
+        assert result.startswith("+") or result.startswith("-")
+
+    def test_binary_price_to_american_float_like_string(self):
+        assert binary_price_to_american("0.06") == kalshi_price_to_american("0.06")
+
+    def test_binary_price_to_decimal_none(self):
+        assert binary_price_to_decimal(None) is None
+
+    def test_binary_price_to_decimal_empty(self):
+        assert binary_price_to_decimal("") is None
+
+    def test_binary_price_to_decimal_zero(self):
+        assert binary_price_to_decimal("0.0") is None
+
+    def test_binary_price_to_decimal_one(self):
+        assert binary_price_to_decimal("1.0") is None
+
+    def test_binary_midpoint_typical(self):
+        result = binary_midpoint("0.04", "0.06")
+        assert abs(result - 0.05) < 0.0001
+
+    def test_binary_midpoint_none(self):
+        assert binary_midpoint(None, "0.06") is None
+        assert binary_midpoint("0.04", None) is None
+
+    def test_identity_price_to_american(self):
+        assert binary_price_to_american is kalshi_price_to_american
+
+    def test_identity_price_to_decimal(self):
+        assert binary_price_to_decimal is kalshi_price_to_decimal
+
+    def test_identity_midpoint(self):
+        assert binary_midpoint is kalshi_midpoint

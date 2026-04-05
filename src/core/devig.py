@@ -243,12 +243,12 @@ def devig_three_way(prob_a: float, prob_b: float, prob_c: float) -> tuple[float,
     return (result[0], result[1], result[2])
 
 
-# ---- Kalshi Odds Conversion ----
+# ---- Binary Contract Odds Conversion ----
 
-def kalshi_price_to_american(price_str: str) -> str:
-    """Convert a Kalshi dollar price string to American odds string.
+def binary_price_to_american(price_str: str) -> str:
+    """Convert a binary contract price string (0.00-1.00) to American odds string.
 
-    Kalshi contracts are priced 0.00-1.00 (cost to buy a YES contract
+    Binary contracts are priced 0.00-1.00 (cost to buy a YES contract
     paying $1). E.g., '0.06' -> '+1567'.
     """
     if not price_str or not isinstance(price_str, str):
@@ -269,8 +269,8 @@ def kalshi_price_to_american(price_str: str) -> str:
         return f"-{american}"
 
 
-def kalshi_price_to_decimal(price_str: str) -> float | None:
-    """Convert a Kalshi dollar price string to decimal odds.
+def binary_price_to_decimal(price_str: str) -> float | None:
+    """Convert a binary contract price string to decimal odds.
 
     E.g., '0.06' -> 16.667.
     """
@@ -285,8 +285,8 @@ def kalshi_price_to_decimal(price_str: str) -> float | None:
     return 1.0 / prob
 
 
-def kalshi_midpoint(bid_str: str, ask_str: str) -> float | None:
-    """Compute midpoint probability from Kalshi bid and ask prices.
+def binary_midpoint(bid_str: str, ask_str: str) -> float | None:
+    """Compute midpoint probability from binary contract bid and ask prices.
 
     E.g., ('0.04', '0.06') -> 0.05.
     """
@@ -302,3 +302,9 @@ def kalshi_midpoint(bid_str: str, ask_str: str) -> float | None:
     if bid < 0 or ask < 0 or bid > 1.0 or ask > 1.0:
         return None
     return (bid + ask) / 2.0
+
+
+# Backward-compatible aliases (used by existing Kalshi code and tests)
+kalshi_price_to_american = binary_price_to_american
+kalshi_price_to_decimal = binary_price_to_decimal
+kalshi_midpoint = binary_midpoint

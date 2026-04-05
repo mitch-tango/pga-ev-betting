@@ -19,7 +19,12 @@
     "section-10-workflow",
     "section-11-testing"
   ],
-  "sections_state": {},
+  "sections_state": {
+    "section-01-config": {
+      "status": "complete",
+      "commit_hash": "d9221b9"
+    }
+  },
   "pre_commit": {
     "present": false,
     "type": "none",

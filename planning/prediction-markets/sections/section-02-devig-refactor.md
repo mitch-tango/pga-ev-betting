@@ -125,3 +125,15 @@ After implementation, verify:
 3. No other files were modified in this section
 4. Both `from src.core.devig import binary_price_to_american` and `from src.core.devig import kalshi_price_to_american` work and return the same function object
 5. `binary_price_to_american is kalshi_price_to_american` evaluates to `True`
+
+## Implementation Notes
+
+**Files modified:** `src/core/devig.py`, `tests/test_devig.py`
+**Files created:** None
+
+**Deviations from plan:** None — implemented exactly as specified.
+
+**Code review fixes applied:**
+- Added `test_binary_price_to_decimal_zero` and `test_binary_price_to_decimal_one` boundary tests (missing from initial implementation)
+
+**Test count:** 86 tests passing (68 existing + 18 new in TestBinaryGenericNames).
