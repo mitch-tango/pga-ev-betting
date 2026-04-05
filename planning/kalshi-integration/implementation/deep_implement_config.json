@@ -28,6 +28,10 @@
     "section-03-config-schema": {
       "status": "complete",
       "commit_hash": "ac02814"
+    },
+    "section-04-tournament-matching": {
+      "status": "complete",
+      "commit_hash": "74ef649"
     }
   },
   "pre_commit": {

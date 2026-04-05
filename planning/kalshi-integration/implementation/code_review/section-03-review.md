@@ -1,0 +1,17 @@
+# Code Review: Section 03 - Config Schema
+
+The implementation is a near-verbatim copy of the plan and covers all 12 verification checklist items. That said, there are several issues worth flagging:
+
+1. **BOOK_WEIGHTS 'make_cut' weight lookup is misleading with Kalshi absent.** In `build_book_consensus` (blend.py line 106-107), `make_cut` market type uses `config.BOOK_WEIGHTS['win']` for its weight config -- NOT `config.BOOK_WEIGHTS['make_cut']`. This means if a `kalshi` key somehow appears in `book_probs` for a make_cut market, it WILL be picked up with weight 2 (from the 'win' dict), despite kalshi not offering make_cut. The plan says 'Do not add kalshi to make_cut' and the test (`test_kalshi_absent_from_make_cut_weights`) verifies kalshi is absent from that sub-dict, but the test gives false confidence because the make_cut code path never reads that sub-dict. This is a latent correctness bug: the config and the code disagree on which weight dict governs make_cut. Not a section-03 regression, but the plan should have called it out rather than implying the absence from make_cut protects anything.
+
+2. **No test verifies the config constants themselves.** The plan's verification checklist items 1-5 (KALSHI_BASE_URL, KALSHI_RATE_LIMIT_DELAY, KALSHI_MIN_OPEN_INTEREST, KALSHI_MAX_SPREAD, KALSHI_SERIES_TICKERS) are not covered by any test. The test file only covers BOOK_WEIGHTS and build_book_consensus. If someone changes KALSHI_MIN_OPEN_INTEREST from 100 to 10, no test fails. For config that gates data quality (min OI, max spread), a trivial assertion test would prevent silent regressions.
+
+3. **KALSHI_SERIES_TICKERS has no validation or freezing.** It is a mutable dict at module level. Any downstream code can mutate it (e.g., `config.KALSHI_SERIES_TICKERS['win'] = 'oops'`). For a lookup table that drives API calls, consider making it a `MappingProxyType` or at minimum adding a test that asserts the expected keys and values.
+
+4. **`build_book_consensus` default weight of 1 for unknown books (blend.py line 121) silently accepts typos.** If Kalshi data arrives with key `'Kalshi'` (capital K) instead of `'kalshi'`, the `.lower().strip()` on line 120 normalizes it, so this particular case is handled. But the fallback to weight=1 means any garbage book name silently participates in consensus. This is pre-existing, not introduced here, but the plan's reliance on 'no code changes needed in blend.py' means this footgun persists.
+
+5. **Schema: no migration path.** The diff modifies `schema.sql` which appears to be the initial DDL. If the database already exists in production, adding rows to the seed INSERT will have no effect unless `schema.sql` is re-run. The `ON CONFLICT DO NOTHING` clause prevents errors but also prevents updates. There is no migration file. If book_rules rows need updating later (e.g., changing tie_rule), there is no mechanism for that.
+
+6. **Test file location.** The test is created at `tests/test_kalshi_edge.py` (repo root `tests/`). The plan notes that later sections will add more test classes to this same file. This is fine, but there is no `__init__.py` or conftest visible -- worth confirming the test runner discovers this path. (Minor, likely already working given existing test infrastructure.)
+
+Overall: the implementation is faithful to the spec. The most actionable issue is item 1 -- the make_cut/win weight aliasing means the 'no kalshi in make_cut' invariant is not actually enforced at the code path level. Everything else is minor or pre-existing.
