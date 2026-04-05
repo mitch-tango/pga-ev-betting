@@ -18,6 +18,20 @@ RATE_LIMIT_DELAY = 1.5  # seconds between API calls
 API_TIMEOUT = 30  # seconds
 API_MAX_RETRIES = 3
 
+# --- Kalshi ---
+KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_RATE_LIMIT_DELAY = 0.1  # 100ms between calls (conservative vs 20/sec limit)
+KALSHI_MIN_OPEN_INTEREST = 100  # Minimum OI to include in consensus
+KALSHI_MAX_SPREAD = 0.05  # Max bid-ask spread ($0.05) — wider = illiquid
+KALSHI_SERIES_TICKERS = {
+    "win": "KXPGATOUR",
+    "t10": "KXPGATOP10",
+    "t20": "KXPGATOP20",
+    "tournament_matchup": "KXPGAH2H",
+}
+# TODO: Polymarket — add POLYMARKET_BASE_URL, POLYMARKET_CLOB_URL, book weights here
+# Polymarket covers outrights + top-N but NOT matchups. Gamma API for discovery, CLOB for prices.
+
 # --- Supabase ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -46,13 +60,16 @@ BOOK_WEIGHTS = {
     "win": {
         "pinnacle": 2, "betcris": 2, "betonline": 2,
         "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
+        "kalshi": 2,  # Sharp — prediction markets are efficient
     },
     "placement": {
         "betonline": 1, "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
+        "kalshi": 1,  # Equal weight for placement
     },
     "make_cut": {
         "pinnacle": 2, "betcris": 2, "betonline": 2,
         "draftkings": 1, "fanduel": 1, "bovada": 1, "start": 1,
+        # No kalshi — they don't offer make_cut
     },
     # Matchups: equal-weighted average in edge.py (no weight dict needed),
     # but listed here for reference when Start outrights are added.

@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS players (
 );
 
 -- Player aliases (cross-book name mapping)
+-- Valid sources: 'datagolf', 'start', 'kalshi'
+-- TODO: Add 'polymarket' when Polymarket integration is built
 CREATE TABLE IF NOT EXISTS player_aliases (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     player_id UUID REFERENCES players(id) NOT NULL,
@@ -57,6 +59,18 @@ INSERT INTO book_rules (book, market_type, tie_rule, wd_rule, dead_heat_method, 
     ('bovada', 'round_matchup', 'push', 'void', NULL, NULL),
     ('bovada', '3_ball', 'dead_heat', 'void', 'standard', NULL)
 ON CONFLICT (book, market_type) DO NOTHING;
+
+-- Kalshi settlement rules
+-- Binary contracts: $1 payout on YES, $0 on NO. No dead-heat reduction on placement.
+INSERT INTO book_rules (book, market_type, tie_rule, wd_rule, dead_heat_method, notes) VALUES
+    ('kalshi', 'win', 'void', 'void', NULL, 'Binary contract: $1 win / $0 lose. WD = voided contract.'),
+    ('kalshi', 't10', 'win', 'void', NULL, 'Binary: settles YES ($1) if official finish T10 or better, including ties. No dead-heat reduction.'),
+    ('kalshi', 't20', 'win', 'void', NULL, 'Binary: settles YES ($1) if official finish T20 or better, including ties. No dead-heat reduction.'),
+    ('kalshi', 'tournament_matchup', 'void', 'void', NULL, 'Binary H2H: voided if tie or WD.')
+ON CONFLICT (book, market_type) DO NOTHING;
+
+-- TODO: Polymarket settlement rules — similar binary contract structure to Kalshi.
+-- Covers outrights and top-N, but NOT matchups. Requires keyword-based event discovery.
 
 -- Tournaments
 CREATE TABLE IF NOT EXISTS tournaments (

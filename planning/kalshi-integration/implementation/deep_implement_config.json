@@ -20,6 +20,10 @@
     "section-01-odds-conversion": {
       "status": "complete",
       "commit_hash": "a3bc514"
+    },
+    "section-02-kalshi-client": {
+      "status": "complete",
+      "commit_hash": "35b944e"
     }
   },
   "pre_commit": {
