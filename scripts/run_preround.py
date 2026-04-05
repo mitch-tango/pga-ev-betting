@@ -16,9 +16,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.pipeline.pull_matchups import pull_round_matchups, pull_3balls
+from src.pipeline.pull_kalshi import (
+    pull_kalshi_matchups, merge_kalshi_into_matchups,
+)
 from src.parsers.start_matchups import parse_start_matchups_from_file
 from src.parsers.start_merger import merge_start_into_matchups
 from src.core.edge import calculate_matchup_edges, calculate_3ball_edges
@@ -221,6 +224,39 @@ def main():
         print(f"  Matched to DG: {matched} | Unmatched: {len(unmatched)}")
         for u in unmatched:
             print(f"    ? {u['p1_name']} vs {u['p2_name']}")
+
+    # Kalshi tournament matchups (guard: skip if no live DG model)
+    # Kalshi tournament-long prices reflect in-tournament performance.
+    # Comparing live Kalshi prices against stale pre-tournament DG would
+    # create false-positive edges, so we skip unless live DG is available.
+    # For now, live DG predictions are not yet implemented, so always skip.
+    kalshi_enabled = False  # TODO: set True when get_live_predictions() exists
+    if kalshi_enabled:
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            # PGA tournaments run Thu-Sun (4 days)
+            end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
+            tournament_name_for_kalshi = ""
+            if tournament_id:
+                t = db.get_tournament_by_id(tournament_id)
+                if t:
+                    tournament_name_for_kalshi = t.get("tournament_name", "")
+            if tournament_name_for_kalshi:
+                kalshi_matchup_data = pull_kalshi_matchups(
+                    tournament_name_for_kalshi, today, end_date,
+                    tournament_slug=args.tournament,
+                )
+                if kalshi_matchup_data and round_matchups:
+                    merge_kalshi_into_matchups(round_matchups, kalshi_matchup_data)
+                    print(f"  Kalshi tournament matchups: {len(kalshi_matchup_data)} merged")
+        except Exception as e:
+            print(f"  Warning: Kalshi unavailable ({e}), proceeding without")
+    else:
+        print("  Skipping Kalshi tournament markets (no live DG model — stale model risk)")
+
+    # TODO: Polymarket integration — pull_polymarket_outrights() would follow
+    # the same pattern here. Polymarket covers win/T10/T20 but NOT matchups.
+    # Requires keyword-based event discovery (no golf-specific ticker).
 
     # Pull 3-balls
     print("Pulling 3-ball odds...")

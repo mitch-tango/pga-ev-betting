@@ -23,10 +23,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.pipeline.pull_outrights import pull_all_outrights
 from src.pipeline.pull_matchups import pull_tournament_matchups
+from src.pipeline.pull_kalshi import (
+    pull_kalshi_outrights, pull_kalshi_matchups,
+    merge_kalshi_into_outrights, merge_kalshi_into_matchups,
+)
 from src.parsers.start_matchups import parse_start_matchups_from_file
 from src.parsers.start_merger import merge_start_into_matchups
 from src.core.edge import calculate_placement_edges, calculate_matchup_edges
@@ -246,6 +250,43 @@ def main():
     print("\nPulling tournament matchups...")
     matchups = pull_tournament_matchups(tournament_slug, tour)
     print(f"  Matchups: {len(matchups)}")
+
+    # Pull Kalshi odds (graceful degradation — never blocks DG pipeline)
+    print("\nPulling Kalshi odds...")
+    try:
+        tournament_name_for_kalshi = outrights.get("_event_name", "")
+        if not tournament_name_for_kalshi:
+            print("  Warning: tournament name unknown, skipping Kalshi")
+            raise ValueError("No tournament name for Kalshi matching")
+        today = datetime.now().strftime("%Y-%m-%d")
+        # PGA tournaments run Thu-Sun (4 days)
+        end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
+
+        kalshi_outrights = pull_kalshi_outrights(
+            tournament_name_for_kalshi, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if any(len(v) > 0 for v in kalshi_outrights.values()):
+            merge_kalshi_into_outrights(outrights, kalshi_outrights)
+            for mkt, players in kalshi_outrights.items():
+                if players:
+                    print(f"  Kalshi {mkt}: {len(players)} players merged")
+        else:
+            print("  Kalshi: no outright data available")
+
+        kalshi_matchup_data = pull_kalshi_matchups(
+            tournament_name_for_kalshi, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if kalshi_matchup_data:
+            merge_kalshi_into_matchups(matchups, kalshi_matchup_data)
+            print(f"  Kalshi matchups: {len(kalshi_matchup_data)} merged")
+    except Exception as e:
+        print(f"  Warning: Kalshi unavailable ({e}), proceeding with DG-only")
+
+    # TODO: Polymarket integration — pull_polymarket_outrights() would follow
+    # the same pattern here. Polymarket covers win/T10/T20 but NOT matchups.
+    # Requires keyword-based event discovery (no golf-specific ticker).
 
     # Merge Start odds if provided
     if args.start_file and matchups:

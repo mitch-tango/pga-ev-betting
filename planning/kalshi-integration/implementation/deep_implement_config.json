@@ -40,6 +40,10 @@
     "section-06-pipeline-merge": {
       "status": "complete",
       "commit_hash": "b7aeda5"
+    },
+    "section-07-edge-deadheat": {
+      "status": "complete",
+      "commit_hash": "05b9c7c"
     }
   },
   "pre_commit": {
