@@ -31,6 +31,10 @@
     "section-03-edge-updates": {
       "status": "complete",
       "commit_hash": "e31f2b1"
+    },
+    "section-04-polymarket-client": {
+      "status": "complete",
+      "commit_hash": "113bdbe"
     }
   },
   "pre_commit": {

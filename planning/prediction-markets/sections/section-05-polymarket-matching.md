@@ -101,11 +101,26 @@ Thin wrapper: `resolve_player(name, source="polymarket", auto_create=auto_create
 
 Follow `src/pipeline/kalshi_matching.py` structure: module-level compiled regex patterns, `_is_pga_event()` helper, `_clean_name()` helper, logging via `logging.getLogger(__name__)`, type hints, docstrings.
 
+## Deviations from Original Plan
+
+1. **PGA event filtering changed to exclusion-only**: Instead of requiring PGA indicators in the title, events are now accepted unless they match a non-PGA exclusion list (LIV, DPWT, LPGA, Korn Ferry). This handles events like "Arnold Palmer Invitational" that don't contain "PGA" in the title.
+2. **Date overlap with name preference**: When multiple PGA events overlap in dates, the function now picks the one with the best name match instead of returning the first. This handles the 2-3 times/year when concurrent tournaments exist.
+3. **groupItemTitle added as priority 1 extraction**: Polymarket reliably provides `groupItemTitle` on markets, making it the most reliable name source. Slug is priority 2, question regex is priority 3.
+4. **Title stripping split into two patterns**: Separate prefix and suffix regex patterns applied sequentially, fixing a bug where only one could fire per pass.
+5. **Slug extraction requires event_slug prefix match**: Prevents extracting garbage names when slugs don't follow the expected pattern.
+6. **Word-boundary check on groupItemTitle filtering**: Uses `\b` regex instead of substring `in` to avoid false rejections (e.g., "Justin Thomas" containing "no").
+
+## Files Created/Modified
+
+- `src/pipeline/polymarket_matching.py` (created)
+- `tests/test_polymarket_matching.py` (created)
+
 ## Verification Checklist
 
 1. Tournament matching uses UTC date range overlap (not ±1 day point matching)
 2. Fuzzy threshold is 0.85 (not 0.70)
-3. Non-PGA tours explicitly excluded
-4. Player name extraction handles slug and regex paths
-5. Unicode normalization applied
-6. `uv run pytest tests/test_polymarket_matching.py` passes
+3. Non-PGA tours explicitly excluded; non-PGA-titled events accepted
+4. Date overlap prefers best name match among candidates
+5. Player name extraction handles groupItemTitle, slug, and regex paths
+6. Unicode normalization applied
+7. 18 tests passing: `uv run pytest tests/test_polymarket_matching.py`
