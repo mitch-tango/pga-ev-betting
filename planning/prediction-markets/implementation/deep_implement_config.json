@@ -1,0 +1,32 @@
+{
+  "plugin_root": "/Users/mitch_tango/.claude/plugins/cache/piercelamb-plugins/deep-implement/0.2.1",
+  "sections_dir": "/Users/mitch_tango/Library/CloudStorage/Dropbox-NewCity/Maitland Thompson/Working/EV/pga-ev-betting/planning/prediction-markets/sections",
+  "target_dir": "/Users/mitch_tango/Library/CloudStorage/Dropbox-NewCity/Maitland Thompson/Working/EV/pga-ev-betting",
+  "state_dir": "/Users/mitch_tango/Library/CloudStorage/Dropbox-NewCity/Maitland Thompson/Working/EV/pga-ev-betting/planning/prediction-markets/implementation",
+  "git_root": "/Users/mitch_tango/Library/CloudStorage/Dropbox-NewCity/Maitland Thompson/Working/EV/pga-ev-betting",
+  "commit_style": "simple",
+  "test_command": "uv run pytest",
+  "sections": [
+    "section-01-config",
+    "section-02-devig-refactor",
+    "section-03-edge-updates",
+    "section-04-polymarket-client",
+    "section-05-polymarket-matching",
+    "section-06-polymarket-pull",
+    "section-07-prophetx-client",
+    "section-08-prophetx-matching",
+    "section-09-prophetx-pull",
+    "section-10-workflow",
+    "section-11-testing"
+  ],
+  "sections_state": {},
+  "pre_commit": {
+    "present": false,
+    "type": "none",
+    "config_file": null,
+    "native_hook": null,
+    "may_modify_files": false,
+    "detected_formatters": []
+  },
+  "created_at": "2026-04-05T18:13:13.271156+00:00"
+}
