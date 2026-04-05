@@ -31,6 +31,14 @@ from src.pipeline.pull_kalshi import (
     pull_kalshi_outrights, pull_kalshi_matchups,
     merge_kalshi_into_outrights, merge_kalshi_into_matchups,
 )
+from src.pipeline.pull_polymarket import (
+    pull_polymarket_outrights,
+    merge_polymarket_into_outrights,
+)
+from src.pipeline.pull_prophetx import (
+    pull_prophetx_outrights, pull_prophetx_matchups,
+    merge_prophetx_into_outrights, merge_prophetx_into_matchups,
+)
 from src.parsers.start_matchups import parse_start_matchups_from_file
 from src.parsers.start_merger import merge_start_into_matchups
 from src.core.edge import calculate_placement_edges, calculate_matchup_edges
@@ -206,6 +214,58 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
     print(f"Bets placed this session: {len(placed_bets)}")
 
 
+def _pull_polymarket_block(outrights, tournament_name, today, end_date,
+                           tournament_slug=None):
+    """Pull and merge Polymarket outrights. Graceful degradation on failure."""
+    if not config.POLYMARKET_ENABLED:
+        print("\nPolymarket: disabled")
+        return
+    print("\nPulling Polymarket odds...")
+    try:
+        polymarket_outrights = pull_polymarket_outrights(
+            tournament_name, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if any(len(v) > 0 for v in polymarket_outrights.values()):
+            merge_polymarket_into_outrights(outrights, polymarket_outrights)
+            for mkt, players in polymarket_outrights.items():
+                if players:
+                    print(f"  Polymarket {mkt}: {len(players)} players merged")
+        else:
+            print("  Polymarket: no outright data available")
+    except Exception as e:
+        print(f"  Warning: Polymarket unavailable ({e}), proceeding without")
+
+
+def _pull_prophetx_block(outrights, matchups, tournament_name, today, end_date,
+                         tournament_slug=None):
+    """Pull and merge ProphetX outrights + matchups. Graceful degradation."""
+    if not config.PROPHETX_ENABLED:
+        print("\nProphetX: disabled (no credentials)")
+        return
+    print("\nPulling ProphetX odds...")
+    try:
+        prophetx_outrights = pull_prophetx_outrights(
+            tournament_name, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if any(len(v) > 0 for v in prophetx_outrights.values()):
+            merge_prophetx_into_outrights(outrights, prophetx_outrights)
+            for mkt, players in prophetx_outrights.items():
+                if players:
+                    print(f"  ProphetX {mkt}: {len(players)} players merged")
+
+        prophetx_matchup_data = pull_prophetx_matchups(
+            tournament_name, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if prophetx_matchup_data:
+            merge_prophetx_into_matchups(matchups, prophetx_matchup_data)
+            print(f"  ProphetX matchups: {len(prophetx_matchup_data)} merged")
+    except Exception as e:
+        print(f"  Warning: ProphetX unavailable ({e}), proceeding without")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Pre-tournament +EV scan"
@@ -251,16 +311,17 @@ def main():
     matchups = pull_tournament_matchups(tournament_slug, tour)
     print(f"  Matchups: {len(matchups)}")
 
+    # Date range for prediction market matching
+    tournament_name_for_kalshi = outrights.get("_event_name", "")
+    today = datetime.now().strftime("%Y-%m-%d")
+    end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")  # Thu-Sun
+
     # Pull Kalshi odds (graceful degradation — never blocks DG pipeline)
     print("\nPulling Kalshi odds...")
     try:
-        tournament_name_for_kalshi = outrights.get("_event_name", "")
         if not tournament_name_for_kalshi:
             print("  Warning: tournament name unknown, skipping Kalshi")
             raise ValueError("No tournament name for Kalshi matching")
-        today = datetime.now().strftime("%Y-%m-%d")
-        # PGA tournaments run Thu-Sun (4 days)
-        end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
 
         kalshi_outrights = pull_kalshi_outrights(
             tournament_name_for_kalshi, today, end_date,
@@ -284,9 +345,13 @@ def main():
     except Exception as e:
         print(f"  Warning: Kalshi unavailable ({e}), proceeding with DG-only")
 
-    # TODO: Polymarket integration — pull_polymarket_outrights() would follow
-    # the same pattern here. Polymarket covers win/T10/T20 but NOT matchups.
-    # Requires keyword-based event discovery (no golf-specific ticker).
+    # Polymarket outrights
+    _pull_polymarket_block(outrights, tournament_name_for_kalshi, today, end_date,
+                           tournament_slug=tournament_slug)
+
+    # ProphetX outrights + matchups
+    _pull_prophetx_block(outrights, matchups, tournament_name_for_kalshi, today, end_date,
+                         tournament_slug=tournament_slug)
 
     # Merge Start odds if provided
     if args.start_file and matchups:

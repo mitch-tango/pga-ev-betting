@@ -62,6 +62,14 @@ def main():
         print("Kalshi: merged")
     elif stats.get("kalshi_error"):
         print(f"Kalshi: unavailable ({stats['kalshi_error'][:60]})")
+    if stats.get("polymarket_merged"):
+        print("Polymarket: merged")
+    elif stats.get("polymarket_error"):
+        print(f"Polymarket: unavailable ({stats['polymarket_error'][:60]})")
+    if stats.get("prophetx_merged"):
+        print("ProphetX: merged")
+    elif stats.get("prophetx_error"):
+        print(f"ProphetX: unavailable ({stats['prophetx_error'][:60]})")
     print(f"Bankroll: ${stats.get('bankroll', 0):,.2f}")
 
     # Show edge breakdown

@@ -24,6 +24,14 @@ from src.pipeline.pull_kalshi import (
     pull_kalshi_outrights, pull_kalshi_matchups,
     merge_kalshi_into_outrights, merge_kalshi_into_matchups,
 )
+from src.pipeline.pull_polymarket import (
+    pull_polymarket_outrights,
+    merge_polymarket_into_outrights,
+)
+from src.pipeline.pull_prophetx import (
+    pull_prophetx_outrights, pull_prophetx_matchups,
+    merge_prophetx_into_outrights, merge_prophetx_into_matchups,
+)
 from src.core.edge import calculate_placement_edges, calculate_matchup_edges, calculate_3ball_edges, CandidateBet
 from src.core.kelly import get_correlation_haircut
 from src.normalize.players import resolve_candidates
@@ -138,6 +146,47 @@ def _override_dg_with_live(outrights: dict[str, list[dict]], live_players: list[
     return total_matched
 
 
+def _pull_polymarket_block(outrights, stats, tournament_name, today, end_date,
+                           tournament_slug=None):
+    """Pull and merge Polymarket outrights into live data. Graceful degradation."""
+    if not config.POLYMARKET_ENABLED:
+        return
+    try:
+        polymarket_outrights = pull_polymarket_outrights(
+            tournament_name, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if any(len(v) > 0 for v in polymarket_outrights.values()):
+            merge_polymarket_into_outrights(outrights, polymarket_outrights)
+            stats["polymarket_merged"] = True
+    except Exception as e:
+        stats["polymarket_error"] = str(e)
+
+
+def _pull_prophetx_block(outrights, matchups, stats, tournament_name, today, end_date,
+                         tournament_slug=None):
+    """Pull and merge ProphetX outrights + matchups into live data. Graceful degradation."""
+    if not config.PROPHETX_ENABLED:
+        return
+    try:
+        prophetx_outrights = pull_prophetx_outrights(
+            tournament_name, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if any(len(v) > 0 for v in prophetx_outrights.values()):
+            merge_prophetx_into_outrights(outrights, prophetx_outrights)
+            stats["prophetx_merged"] = True
+
+        prophetx_matchup_data = pull_prophetx_matchups(
+            tournament_name, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if prophetx_matchup_data and isinstance(matchups, list):
+            merge_prophetx_into_matchups(matchups, prophetx_matchup_data)
+    except Exception as e:
+        stats["prophetx_error"] = str(e)
+
+
 def pull_live_edges(
     tour: str = "pga",
     tournament_slug: str | None = None,
@@ -169,12 +218,13 @@ def pull_live_edges(
     matched = _override_dg_with_live(outrights, live_players)
     stats["matched"] = matched
 
+    # Date range for prediction market matching
+    today = datetime.now().strftime("%Y-%m-%d")
+    end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
+
     # Step 4: Pull and merge Kalshi odds (now safe — we have live DG data)
     if include_kalshi:
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
-
             kalshi_outrights = pull_kalshi_outrights(
                 tournament_name, today, end_date,
                 tournament_slug=tournament_slug,
@@ -184,6 +234,23 @@ def pull_live_edges(
                 stats["kalshi_merged"] = True
         except Exception as e:
             stats["kalshi_error"] = str(e)
+
+    # Step 4b: Pull and merge Polymarket outrights
+    _pull_polymarket_block(outrights, stats, tournament_name, today, end_date,
+                           tournament_slug=tournament_slug)
+
+    # Step 4c: Pull and merge ProphetX outrights only (matchups merged in step 7)
+    if config.PROPHETX_ENABLED:
+        try:
+            prophetx_outrights = pull_prophetx_outrights(
+                tournament_name, today, end_date,
+                tournament_slug=tournament_slug,
+            )
+            if any(len(v) > 0 for v in prophetx_outrights.values()):
+                merge_prophetx_into_outrights(outrights, prophetx_outrights)
+                stats["prophetx_merged"] = True
+        except Exception as e:
+            stats["prophetx_error"] = str(e)
 
     # Step 5: Get bankroll and existing bets
     bankroll = db.get_bankroll()
@@ -227,14 +294,24 @@ def pull_live_edges(
             # Merge Kalshi matchups if available
             if include_kalshi:
                 try:
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
                     kalshi_matchup_data = pull_kalshi_matchups(
                         tournament_name, today, end_date,
                         tournament_slug=tournament_slug,
                     )
                     if kalshi_matchup_data:
                         merge_kalshi_into_matchups(round_matchups, kalshi_matchup_data)
+                except Exception:
+                    pass
+
+            # Merge ProphetX matchups
+            if config.PROPHETX_ENABLED:
+                try:
+                    prophetx_matchup_data = pull_prophetx_matchups(
+                        tournament_name, today, end_date,
+                        tournament_slug=tournament_slug,
+                    )
+                    if prophetx_matchup_data:
+                        merge_prophetx_into_matchups(round_matchups, prophetx_matchup_data)
                 except Exception:
                     pass
 

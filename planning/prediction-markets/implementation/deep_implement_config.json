@@ -51,6 +51,10 @@
     "section-08-prophetx-matching": {
       "status": "complete",
       "commit_hash": "cb1be84"
+    },
+    "section-09-prophetx-pull": {
+      "status": "complete",
+      "commit_hash": "589271e"
     }
   },
   "pre_commit": {

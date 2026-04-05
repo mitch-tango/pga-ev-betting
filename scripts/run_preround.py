@@ -22,6 +22,9 @@ from src.pipeline.pull_matchups import pull_round_matchups, pull_3balls
 from src.pipeline.pull_kalshi import (
     pull_kalshi_matchups, merge_kalshi_into_matchups,
 )
+from src.pipeline.pull_prophetx import (
+    pull_prophetx_matchups, merge_prophetx_into_matchups,
+)
 from src.parsers.start_matchups import parse_start_matchups_from_file
 from src.parsers.start_merger import merge_start_into_matchups
 from src.core.edge import calculate_matchup_edges, calculate_3ball_edges
@@ -168,6 +171,29 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
     print(f"\nBankroll: ${new_balance:.2f}")
 
 
+def _pull_prophetx_matchup_block(matchups, tournament_name, today, end_date,
+                                 tournament_slug=None):
+    """Pull and merge ProphetX matchups. Graceful degradation on failure."""
+    if not config.PROPHETX_ENABLED:
+        print("\nProphetX: disabled (no credentials)")
+        return
+    if not tournament_name:
+        return
+    print("\nPulling ProphetX matchups...")
+    try:
+        prophetx_matchup_data = pull_prophetx_matchups(
+            tournament_name, today, end_date,
+            tournament_slug=tournament_slug,
+        )
+        if prophetx_matchup_data and matchups:
+            merge_prophetx_into_matchups(matchups, prophetx_matchup_data)
+            print(f"  ProphetX matchups: {len(prophetx_matchup_data)} merged")
+        else:
+            print("  ProphetX: no matchup data available")
+    except Exception as e:
+        print(f"  Warning: ProphetX unavailable ({e}), proceeding without")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Pre-round matchup + 3-ball scan")
     parser.add_argument("--dry-run", action="store_true")
@@ -225,6 +251,15 @@ def main():
         for u in unmatched:
             print(f"    ? {u['p1_name']} vs {u['p2_name']}")
 
+    # Date range and tournament name for prediction market matching
+    today = datetime.now().strftime("%Y-%m-%d")
+    end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")  # Thu-Sun
+    tournament_name_for_kalshi = ""
+    if tournament_id:
+        t = db.get_tournament_by_id(tournament_id)
+        if t:
+            tournament_name_for_kalshi = t.get("tournament_name", "")
+
     # Kalshi tournament matchups: enabled when live DG model is available.
     # Kalshi tournament-long prices reflect in-tournament performance.
     # We pull DG live predictions to avoid comparing stale DG vs live Kalshi.
@@ -235,14 +270,6 @@ def main():
         print(f"  DG live model: {len(live_data)} players — Kalshi comparison enabled")
     if kalshi_enabled:
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            # PGA tournaments run Thu-Sun (4 days)
-            end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
-            tournament_name_for_kalshi = ""
-            if tournament_id:
-                t = db.get_tournament_by_id(tournament_id)
-                if t:
-                    tournament_name_for_kalshi = t.get("tournament_name", "")
             if tournament_name_for_kalshi:
                 kalshi_matchup_data = pull_kalshi_matchups(
                     tournament_name_for_kalshi, today, end_date,
@@ -256,9 +283,11 @@ def main():
     else:
         print("  Skipping Kalshi tournament markets (no live DG data available)")
 
-    # TODO: Polymarket integration — pull_polymarket_outrights() would follow
-    # the same pattern here. Polymarket covers win/T10/T20 but NOT matchups.
-    # Requires keyword-based event discovery (no golf-specific ticker).
+    # Polymarket: skip in preround (outrights only, not relevant for round analysis)
+
+    # ProphetX matchups
+    _pull_prophetx_matchup_block(round_matchups, tournament_name_for_kalshi, today, end_date,
+                                 tournament_slug=args.tournament)
 
     # Pull 3-balls
     print("Pulling 3-ball odds...")

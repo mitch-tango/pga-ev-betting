@@ -154,12 +154,27 @@ The pipeline must work in every combination:
 
 Each market is independent. Failure in one does not affect others.
 
+## Implementation Notes
+
+### Files Modified
+- `scripts/run_pretournament.py` — Added `_pull_polymarket_block` and `_pull_prophetx_block` helpers
+- `scripts/run_preround.py` — Added `_pull_prophetx_matchup_block` helper (Polymarket skipped by design)
+- `src/pipeline/pull_live_edges.py` — Added `_pull_polymarket_block`, `_pull_prophetx_block` helpers + inline ProphetX outrights in live pipeline
+- `scripts/run_live_check.py` — Added Polymarket/ProphetX stats display lines
+- `tests/test_workflow_integration.py` — 12 tests
+
+### Deviations from Plan
+- **Helper function extraction**: Prediction market blocks extracted as testable `_pull_*_block()` functions rather than inline code, enabling cleaner testing
+- **Polymarket not imported in preround**: Only ProphetX (matchups-only) added. Polymarket is outrights-only, not relevant for round analysis
+- **Live pipeline ProphetX outrights**: Inlined rather than using `_pull_prophetx_block` to avoid duplicate `pull_prophetx_matchups()` API call (matchups merged separately in step 7)
+- **Pull-order and full-pipeline integration tests**: Deferred to section 11 (testing section)
+
 ## Verification Checklist
 
-1. All three scripts import Polymarket and ProphetX modules
-2. Polymarket block checks `POLYMARKET_ENABLED` before pulling
-3. ProphetX block checks `PROPHETX_ENABLED` before pulling
-4. Each block wrapped in its own try/except
-5. Date variables hoisted above Kalshi block
-6. Pipeline works DG-only when all markets fail
-7. `uv run pytest tests/test_workflow_integration.py` passes
+1. Pretournament + live scripts import Polymarket and ProphetX modules ✓
+2. Polymarket block checks `POLYMARKET_ENABLED` before pulling ✓
+3. ProphetX block checks `PROPHETX_ENABLED` before pulling ✓
+4. Each block wrapped in its own try/except ✓
+5. Date variables hoisted above Kalshi block ✓
+6. Pipeline works DG-only when all markets fail ✓
+7. `uv run pytest tests/test_workflow_integration.py` — 12 passed ✓
