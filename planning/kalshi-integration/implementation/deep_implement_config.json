@@ -24,6 +24,10 @@
     "section-02-kalshi-client": {
       "status": "complete",
       "commit_hash": "35b944e"
+    },
+    "section-03-config-schema": {
+      "status": "complete",
+      "commit_hash": "ac02814"
     }
   },
   "pre_commit": {
