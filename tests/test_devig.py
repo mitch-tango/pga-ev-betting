@@ -14,6 +14,9 @@ from src.core.devig import (
     devig_independent,
     devig_two_way,
     devig_three_way,
+    kalshi_price_to_american,
+    kalshi_price_to_decimal,
+    kalshi_midpoint,
 )
 
 
@@ -214,3 +217,124 @@ class TestDevigThreeWay:
     def test_preserves_none(self):
         a, b, c = devig_three_way(0.40, None, 0.30)
         assert b is None
+
+
+# ---- Kalshi Odds Conversion Tests ----
+
+class TestKalshiPriceToAmerican:
+    def test_longshot(self):
+        # (1 - 0.06) / 0.06 * 100 = 1566.67, rounds to 1567
+        assert kalshi_price_to_american('0.06') == '+1567'
+
+    def test_favorite(self):
+        # 0.55 / 0.45 * 100 = 122.22, rounds to 122
+        assert kalshi_price_to_american('0.55') == '-122'
+
+    def test_even_money(self):
+        assert kalshi_price_to_american('0.50') == '+100'
+
+    def test_extreme_longshot(self):
+        assert kalshi_price_to_american('0.01') == '+9900'
+
+    def test_heavy_favorite(self):
+        assert kalshi_price_to_american('0.95') == '-1900'
+
+    def test_result_format(self):
+        result = kalshi_price_to_american('0.30')
+        assert result.startswith('+') or result.startswith('-')
+        # Should be integer string (no decimals)
+        sign = result[0]
+        assert result[1:].isdigit()
+
+    def test_none_input(self):
+        assert kalshi_price_to_american(None) == ''
+
+    def test_empty_string(self):
+        assert kalshi_price_to_american('') == ''
+
+    def test_invalid_range(self):
+        assert kalshi_price_to_american('0.0') == ''
+        assert kalshi_price_to_american('1.0') == ''
+        assert kalshi_price_to_american('-0.5') == ''
+        assert kalshi_price_to_american('1.5') == ''
+
+
+class TestKalshiPriceToDecimal:
+    def test_longshot(self):
+        result = kalshi_price_to_decimal('0.06')
+        assert abs(result - 16.667) < 0.01
+
+    def test_slight_favorite(self):
+        result = kalshi_price_to_decimal('0.55')
+        assert abs(result - 1.818) < 0.01
+
+    def test_even_money(self):
+        result = kalshi_price_to_decimal('0.50')
+        assert result == 2.0
+
+    def test_zero_price(self):
+        assert kalshi_price_to_decimal('0.0') is None
+
+    def test_one_price(self):
+        assert kalshi_price_to_decimal('1.0') is None
+
+    def test_non_numeric(self):
+        assert kalshi_price_to_decimal('abc') is None
+
+    def test_empty_string(self):
+        assert kalshi_price_to_decimal('') is None
+
+    def test_none_input(self):
+        assert kalshi_price_to_decimal(None) is None
+
+
+class TestKalshiMidpoint:
+    def test_basic(self):
+        result = kalshi_midpoint('0.04', '0.06')
+        assert abs(result - 0.05) < 0.0001
+
+    def test_tight_spread(self):
+        result = kalshi_midpoint('0.50', '0.52')
+        assert abs(result - 0.51) < 0.0001
+
+    def test_none_bid(self):
+        assert kalshi_midpoint(None, '0.06') is None
+
+    def test_none_ask(self):
+        assert kalshi_midpoint('0.04', None) is None
+
+    def test_both_empty(self):
+        assert kalshi_midpoint('', '') is None
+
+    def test_bid_exceeds_one(self):
+        assert kalshi_midpoint('1.5', '0.06') is None
+
+    def test_ask_exceeds_one(self):
+        assert kalshi_midpoint('0.04', '2.0') is None
+
+
+class TestKalshiRoundTrip:
+    def test_roundtrip_longshot(self):
+        american = kalshi_price_to_american('0.06')
+        recovered = parse_american_odds(american)
+        assert abs(recovered - 0.06) < 0.002
+
+    def test_roundtrip_favorite(self):
+        american = kalshi_price_to_american('0.55')
+        recovered = parse_american_odds(american)
+        assert abs(recovered - 0.55) < 0.002
+
+    def test_roundtrip_even(self):
+        american = kalshi_price_to_american('0.50')
+        recovered = parse_american_odds(american)
+        assert abs(recovered - 0.50) < 0.001
+
+    def test_roundtrip_extreme_longshot(self):
+        american = kalshi_price_to_american('0.01')
+        recovered = parse_american_odds(american)
+        assert abs(recovered - 0.01) < 0.001
+
+    def test_roundtrip_heavy_favorite(self):
+        american = kalshi_price_to_american('0.95')
+        recovered = parse_american_odds(american)
+        assert abs(recovered - 0.95) < 0.002

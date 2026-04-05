@@ -129,3 +129,16 @@ pytest tests/test_devig.py -v
 ```
 
 All existing tests should continue to pass. The three new test classes (`TestKalshiPriceToAmerican`, `TestKalshiPriceToDecimal`, `TestKalshiMidpoint`) should all pass.
+
+---
+
+## Implementation Notes (Post-Build)
+
+**Files modified:** `src/core/devig.py`, `tests/test_devig.py`
+
+**Deviations from plan:**
+- Added upper-bound validation (`> 1.0`) to `kalshi_midpoint` for bid/ask — prevents invalid probabilities from malformed API data.
+- Added `TestKalshiRoundTrip` test class (5 tests) verifying the `parse_american_odds(kalshi_price_to_american(p))` round-trip property — this was specified in the plan's precision notes but not in the test spec.
+- Added `test_empty_string` to `TestKalshiPriceToDecimal` — omitted from original spec but needed for parity.
+
+**Final test count:** 68 tests (39 existing + 29 new), all passing.

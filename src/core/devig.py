@@ -241,3 +241,64 @@ def devig_three_way(prob_a: float, prob_b: float, prob_c: float) -> tuple[float,
 
     result = power_devig([prob_a, prob_b, prob_c])
     return (result[0], result[1], result[2])
+
+
+# ---- Kalshi Odds Conversion ----
+
+def kalshi_price_to_american(price_str: str) -> str:
+    """Convert a Kalshi dollar price string to American odds string.
+
+    Kalshi contracts are priced 0.00-1.00 (cost to buy a YES contract
+    paying $1). E.g., '0.06' -> '+1567'.
+    """
+    if not price_str or not isinstance(price_str, str):
+        return ""
+    try:
+        prob = float(price_str)
+    except (ValueError, TypeError):
+        return ""
+    if prob <= 0 or prob >= 1:
+        return ""
+    if prob == 0.5:
+        return "+100"
+    if prob < 0.5:
+        american = round((1 - prob) / prob * 100)
+        return f"+{american}"
+    else:
+        american = round(prob / (1 - prob) * 100)
+        return f"-{american}"
+
+
+def kalshi_price_to_decimal(price_str: str) -> float | None:
+    """Convert a Kalshi dollar price string to decimal odds.
+
+    E.g., '0.06' -> 16.667.
+    """
+    if not price_str or not isinstance(price_str, str):
+        return None
+    try:
+        prob = float(price_str)
+    except (ValueError, TypeError):
+        return None
+    if prob <= 0 or prob >= 1.0:
+        return None
+    return 1.0 / prob
+
+
+def kalshi_midpoint(bid_str: str, ask_str: str) -> float | None:
+    """Compute midpoint probability from Kalshi bid and ask prices.
+
+    E.g., ('0.04', '0.06') -> 0.05.
+    """
+    if not bid_str or not isinstance(bid_str, str):
+        return None
+    if not ask_str or not isinstance(ask_str, str):
+        return None
+    try:
+        bid = float(bid_str)
+        ask = float(ask_str)
+    except (ValueError, TypeError):
+        return None
+    if bid < 0 or ask < 0 or bid > 1.0 or ask > 1.0:
+        return None
+    return (bid + ask) / 2.0
