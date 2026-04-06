@@ -13,8 +13,7 @@ CREATE TABLE IF NOT EXISTS players (
 );
 
 -- Player aliases (cross-book name mapping)
--- Valid sources: 'datagolf', 'start', 'kalshi'
--- TODO: Add 'polymarket' when Polymarket integration is built
+-- Valid sources: 'datagolf', 'start', 'kalshi', 'polymarket', 'prophetx'
 CREATE TABLE IF NOT EXISTS player_aliases (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     player_id UUID REFERENCES players(id) NOT NULL,
@@ -69,8 +68,21 @@ INSERT INTO book_rules (book, market_type, tie_rule, wd_rule, dead_heat_method, 
     ('kalshi', 'tournament_matchup', 'void', 'void', NULL, 'Binary H2H: voided if tie or WD.')
 ON CONFLICT (book, market_type) DO NOTHING;
 
--- TODO: Polymarket settlement rules — similar binary contract structure to Kalshi.
--- Covers outrights and top-N, but NOT matchups. Requires keyword-based event discovery.
+-- Polymarket settlement rules
+-- Binary contracts like Kalshi. Covers win/T10/T20 outrights (no matchups).
+INSERT INTO book_rules (book, market_type, tie_rule, wd_rule, dead_heat_method, notes) VALUES
+    ('polymarket', 'win', 'void', 'void', NULL, 'Binary contract: $1 win / $0 lose. WD = voided.'),
+    ('polymarket', 't10', 'win', 'void', NULL, 'Binary: settles YES if official finish T10 or better. No dead-heat reduction.'),
+    ('polymarket', 't20', 'win', 'void', NULL, 'Binary: settles YES if official finish T20 or better. No dead-heat reduction.')
+ON CONFLICT (book, market_type) DO NOTHING;
+
+-- ProphetX settlement rules
+-- Public exchange with orderbook. Covers win/T10/T20 outrights (no matchups).
+INSERT INTO book_rules (book, market_type, tie_rule, wd_rule, dead_heat_method, notes) VALUES
+    ('prophetx', 'win', 'void', 'void', NULL, 'Binary contract. WD = voided.'),
+    ('prophetx', 't10', 'win', 'void', NULL, 'Binary: settles YES if official finish T10 or better.'),
+    ('prophetx', 't20', 'win', 'void', NULL, 'Binary: settles YES if official finish T20 or better.')
+ON CONFLICT (book, market_type) DO NOTHING;
 
 -- Tournaments
 CREATE TABLE IF NOT EXISTS tournaments (
