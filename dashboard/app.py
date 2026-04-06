@@ -11,8 +11,11 @@ def main():
     )
 
     active_bets = st.Page("pages/active_bets.py", title="Active Bets", default=True)
+    performance = st.Page("pages/performance.py", title="Performance")
+    bankroll = st.Page("pages/bankroll.py", title="Bankroll")
+    model_health = st.Page("pages/model_health.py", title="Model Health")
 
-    pg = st.navigation([active_bets])
+    pg = st.navigation([active_bets, performance, bankroll, model_health])
 
     with st.sidebar:
         st.title("PGA +EV Dashboard")

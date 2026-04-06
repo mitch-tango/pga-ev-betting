@@ -18,6 +18,12 @@ _BET_COLUMNS = (
     "implied_prob_at_bet, your_prob, edge, stake, clv"
 )
 
+_SETTLED_BET_COLUMNS = (
+    "id, tournament_id, market_type, player_name, opponent_name, book, "
+    "bet_timestamp, odds_at_bet_decimal, odds_at_bet_american, "
+    "implied_prob_at_bet, your_prob, edge, stake, clv, outcome, pnl"
+)
+
 
 @st.cache_data(ttl=300)
 def get_current_tournament() -> dict | None:
@@ -81,3 +87,107 @@ def get_weekly_pnl(tournament_id: str) -> dict:
         "unsettled_stake": unsettled_stake,
         "net_position": settled_pnl - unsettled_stake,
     }
+
+
+@st.cache_data(ttl=300)
+def get_settled_bets(start_date: str | None = None, end_date: str | None = None) -> list[dict]:
+    """Fetch all settled bets (outcome IS NOT NULL), optionally filtered by date range."""
+    client = get_client()
+    query = (
+        client.table("bets")
+        .select(_SETTLED_BET_COLUMNS)
+        .is_("outcome", "not.null")
+    )
+    if start_date is not None:
+        query = query.gte("bet_timestamp", start_date)
+    if end_date is not None:
+        query = query.lte("bet_timestamp", end_date)
+    query = query.order("bet_timestamp").order("id")
+    result = query.execute()
+    return result.data
+
+
+@st.cache_data(ttl=3600)
+def get_settled_bet_stats() -> dict:
+    """Fetch summary stats for settled bets: count, breakdown by market type, latest timestamp."""
+    client = get_client()
+    result = (
+        client.table("bets")
+        .select("market_type, bet_timestamp", count="exact")
+        .is_("outcome", "not.null")
+        .execute()
+    )
+    rows = result.data
+    by_market: dict[str, int] = {}
+    for row in rows:
+        mt = row["market_type"]
+        by_market[mt] = by_market.get(mt, 0) + 1
+    latest = max((r["bet_timestamp"] for r in rows), default=None)
+    return {
+        "total_count": result.count,
+        "by_market_type": by_market,
+        "latest_timestamp": latest,
+    }
+
+
+@st.cache_data(ttl=3600)
+def get_bankroll_curve() -> list[dict]:
+    """Fetch bankroll curve data from view."""
+    client = get_client()
+    result = (
+        client.table("v_bankroll_curve")
+        .select("entry_date, entry_type, amount, running_balance")
+        .order("entry_date")
+        .execute()
+    )
+    return result.data
+
+
+@st.cache_data(ttl=3600)
+def get_weekly_exposure() -> list[dict]:
+    """Fetch weekly exposure data from view."""
+    client = get_client()
+    result = (
+        client.table("v_weekly_exposure")
+        .select("week, bets_placed, total_exposure, largest_single_bet, unique_players")
+        .order("week")
+        .execute()
+    )
+    return result.data
+
+
+@st.cache_data(ttl=3600)
+def get_clv_weekly() -> list[dict]:
+    """Fetch weekly CLV data from view."""
+    client = get_client()
+    result = (
+        client.table("v_clv_weekly")
+        .select("week, bets, avg_clv_pct, weekly_pnl, avg_edge_pct")
+        .order("week")
+        .execute()
+    )
+    return result.data
+
+
+@st.cache_data(ttl=3600)
+def get_calibration() -> list[dict]:
+    """Fetch calibration data from view."""
+    client = get_client()
+    result = (
+        client.table("v_calibration")
+        .select("prob_bucket, n, avg_predicted_pct, actual_hit_pct")
+        .execute()
+    )
+    return result.data
+
+
+@st.cache_data(ttl=3600)
+def get_roi_by_edge_tier() -> list[dict]:
+    """Fetch ROI by edge tier data from view."""
+    client = get_client()
+    result = (
+        client.table("v_roi_by_edge_tier")
+        .select("edge_tier, total_bets, total_staked, total_pnl, roi_pct, avg_clv_pct")
+        .execute()
+    )
+    return result.data
