@@ -74,9 +74,9 @@ def display_candidates(candidates, bankroll, weekly_exposure, tournament_exposur
     print(f"\n{len(candidates)} candidate bets found:\n")
     print(f" {'#':>3}  {'Player':<22} {'Market':<8} {'Best Book':<12} "
           f"{'Odds':>7} {'Your%':>6} {'Book%':>6} {'Edge':>6} "
-          f"{'Stake':>6} {'Corr':>5}")
+          f"{'Stake':>6} {'Corr':>5} {'CF':>4} {'EP':>4}")
     print(f" {'—'*3}  {'—'*22} {'—'*8} {'—'*12} {'—'*7} {'—'*6} {'—'*6} "
-          f"{'—'*6} {'—'*6} {'—'*5}")
+          f"{'—'*6} {'—'*6} {'—'*5} {'—'*4} {'—'*4}")
 
     for i, c in enumerate(candidates, 1):
         # Format opponent for matchups
@@ -89,10 +89,15 @@ def display_candidates(candidates, bankroll, weekly_exposure, tournament_exposur
         if c.correlation_haircut < 1.0:
             corr_flag += " ⚠️"
 
+        from src.core.coursefit import format_signal as cf_fmt
+        from src.core.expert_picks import format_signal as ep_fmt
+        cf = cf_fmt(c.coursefit_signal)
+        ep = ep_fmt(c.expert_signal)
+
         print(f" {i:>3}  {display_name:<22} {c.market_type:<8} "
               f"{c.best_book:<12} {c.best_odds_american:>7} "
               f"{c.your_prob*100:>5.1f}% {c.best_implied_prob*100:>5.1f}% "
-              f"{c.edge*100:>5.1f}% ${c.suggested_stake:>4.0f} {corr_flag:>5}")
+              f"{c.edge*100:>5.1f}% ${c.suggested_stake:>4.0f} {corr_flag:>5} {cf} {ep}")
 
 
 def interactive_place_bets(candidates, tournament_id, bankroll):
@@ -377,6 +382,24 @@ def main():
         for u in unmatched:
             print(f"    ? {u['p1_name']} vs {u['p2_name']}")
 
+    # ---- Pull Betsperts course-fit data (graceful degradation) ----
+    coursefit_signals = {}
+    if getattr(config, "BETSPERTS_ENABLED", False):
+        print("\nPulling Betsperts course-fit data...")
+        try:
+            from src.core.coursefit import pull_coursefit_data
+            cf_tournament = outrights.get("_event_name") or tournament_slug or ""
+            coursefit_raw = pull_coursefit_data(cf_tournament, tournament_slug)
+            if coursefit_raw:
+                print(f"  Betsperts: {len(coursefit_raw)} players with SG data")
+            else:
+                print("  Betsperts: no coursefit data returned")
+        except Exception as e:
+            coursefit_raw = {}
+            print(f"  Warning: Betsperts unavailable ({e}), proceeding without")
+    else:
+        coursefit_raw = {}
+
     # ---- Detect tournament info ----
     is_signature = False
     tournament_name = outrights.get("_event_name") or tournament_slug or "Unknown Tournament"
@@ -457,6 +480,21 @@ def main():
 
     # Sort all candidates by edge
     all_candidates.sort(key=lambda c: c.edge, reverse=True)
+
+    # Enrich with Betsperts course-fit signals
+    if coursefit_raw and all_candidates:
+        try:
+            from src.core.coursefit import (
+                compute_coursefit_signals, enrich_candidates_with_coursefit,
+            )
+            coursefit_signals = compute_coursefit_signals(
+                coursefit_raw, all_candidates,
+            )
+            enrich_candidates_with_coursefit(all_candidates, coursefit_signals)
+            enriched = sum(1 for c in all_candidates if c.coursefit_signal)
+            print(f"  Course-fit: {enriched}/{len(all_candidates)} candidates enriched")
+        except Exception as e:
+            print(f"  Warning: Course-fit enrichment failed ({e})")
 
     # Resolve player names to canonical IDs (builds alias table over time)
     if all_candidates:
