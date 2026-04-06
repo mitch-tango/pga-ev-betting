@@ -16,9 +16,11 @@ class TestAppSmoke:
 
     def test_active_bets_is_default_page(self):
         from streamlit.testing.v1 import AppTest
+        from unittest.mock import patch
 
-        at = AppTest.from_file("app.py", default_timeout=10)
-        at.run()
-        # The default page should render "Active Bets" header
-        headers = [h.value for h in at.header]
-        assert "Active Bets" in headers
+        with patch("lib.queries.get_current_tournament", return_value=None):
+            at = AppTest.from_file("app.py", default_timeout=10)
+            at.run()
+            # Default page is Active Bets — shows info when no tournament
+            info_values = [el.value for el in at.info]
+            assert any("No active tournament" in v for v in info_values)
