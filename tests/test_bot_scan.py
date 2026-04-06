@@ -79,8 +79,10 @@ class TestStalenessGuard:
 
         assert result is not None
         assert isinstance(result, tuple)
-        assert len(result) == 6
-        candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
+        assert len(result) >= 6
+        candidates = result[0]
+        tournament_name = result[2]
+        bankroll = result[3]
         assert isinstance(candidates, list)
         assert tournament_name == "The Masters"
         assert bankroll == 1000

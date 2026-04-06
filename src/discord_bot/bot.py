@@ -91,6 +91,8 @@ class EVBot(discord.Client):
         self._live_alerted_keys: set[str] = set()  # Avoid duplicate alerts
         # Edge-gone tracking: list of (candidate, channel_id, alert_time)
         self._alerted_candidates: list[tuple[CandidateBet, int, datetime]] = []
+        # Tournament IDs for which we've already posted a summary
+        self._summary_posted_for: set[str] = set()
 
     async def setup_hook(self):
         await self.tree.sync()
@@ -123,6 +125,11 @@ class EVBot(discord.Client):
             if weekday in (3, 4, 5, 6) and now_et.hour == config.ALERT_PREROUND_HOUR:
                 round_number = weekday - 2  # Thu=R1, Fri=R2, Sat=R3, Sun=R4
                 await self._run_and_alert("preround", round_number=round_number)
+
+            # Sunday 8 PM ET → post-tournament summary
+            if weekday == 6 and now_et.hour == 20:
+                if self.last_scan_tournament_id:
+                    await self._post_tournament_summary(self.last_scan_tournament_id)
 
             # Sleep until the next hour boundary + 1 min buffer
             now_et = datetime.now(ET)
@@ -374,6 +381,32 @@ class EVBot(discord.Client):
                 (c, ch_id, t) for c, ch_id, t in self._alerted_candidates
                 if f"{c.player_name}|{c.market_type}|{c.best_book}" not in gone_keys
             ]
+
+    # ------------------------------------------------------------------
+    # Post-tournament summary
+    # ------------------------------------------------------------------
+    async def _post_tournament_summary(self, tournament_id: str, channel=None):
+        """Post a tournament performance recap if all bets are settled."""
+        if tournament_id in self._summary_posted_for:
+            return
+
+        if channel is None:
+            channel = self.get_channel(config.DISCORD_ALERT_CHANNEL_ID)
+        if not channel:
+            return
+
+        try:
+            embed = await asyncio.to_thread(_build_tournament_summary, tournament_id)
+        except Exception as e:
+            log.error("Tournament summary failed: %s", e)
+            return
+
+        if embed is None:
+            return  # Not fully settled yet or no bets
+
+        await channel.send(embed=embed)
+        self._summary_posted_for.add(tournament_id)
+        log.info("Posted tournament summary for %s", tournament_id)
 
     # ------------------------------------------------------------------
     # Live round monitoring
@@ -1172,6 +1205,125 @@ def _run_pretournament_scan(tour: str):
             bankroll, weekly_exposure, tournament_exposure, arbs)
 
 
+def _build_tournament_summary(tournament_id: str) -> discord.Embed | None:
+    """Build a post-tournament performance recap embed.
+
+    Returns None if the tournament has no bets or is not fully settled yet.
+    Blocking — call via asyncio.to_thread.
+    """
+    bets = db.get_bets_for_tournament(tournament_id)
+    if not bets:
+        return None
+
+    # All bets must be settled
+    if any(b.get("outcome") is None for b in bets):
+        return None
+
+    # Tournament name
+    tournament = db.get_tournament_by_id(tournament_id)
+    name = tournament.get("tournament_name", "Unknown") if tournament else "Unknown"
+
+    # --- Aggregates ---
+    total_staked = sum(b.get("stake", 0) for b in bets)
+    total_pnl = sum(b.get("pnl", 0) for b in bets)
+    roi = (total_pnl / total_staked * 100) if total_staked > 0 else 0.0
+
+    # Win-Loss-Push record
+    wins = sum(1 for b in bets if b.get("outcome") in ("win", "half_win"))
+    losses = sum(1 for b in bets if b.get("outcome") in ("loss", "half_loss"))
+    pushes = len(bets) - wins - losses
+
+    # By market type
+    by_market: dict[str, dict] = {}
+    for b in bets:
+        mt = b.get("market_type", "other")
+        entry = by_market.setdefault(mt, {"count": 0, "pnl": 0.0, "w": 0, "l": 0})
+        entry["count"] += 1
+        entry["pnl"] += b.get("pnl", 0)
+        if b.get("outcome") in ("win", "half_win"):
+            entry["w"] += 1
+        elif b.get("outcome") in ("loss", "half_loss"):
+            entry["l"] += 1
+
+    # By book
+    by_book: dict[str, dict] = {}
+    for b in bets:
+        book = b.get("book", "unknown")
+        entry = by_book.setdefault(book, {"count": 0, "pnl": 0.0})
+        entry["count"] += 1
+        entry["pnl"] += b.get("pnl", 0)
+
+    # Edge calibration
+    edges = [b.get("edge", 0) for b in bets if b.get("edge") is not None]
+    avg_edge = sum(edges) / len(edges) * 100 if edges else 0.0
+    clvs = [b.get("clv", 0) for b in bets if b.get("clv") is not None]
+    avg_clv = sum(clvs) / len(clvs) * 100 if clvs else 0.0
+
+    # Season totals
+    roi_data = db.get_roi_by_market()
+    season_bets = sum(r.get("total_bets", 0) for r in roi_data) if roi_data else 0
+    season_staked = sum(r.get("total_staked", 0) for r in roi_data) if roi_data else 0
+    season_pnl = sum(r.get("total_pnl", 0) for r in roi_data) if roi_data else 0
+    season_roi = (season_pnl / season_staked * 100) if season_staked > 0 else 0.0
+    bankroll = db.get_bankroll()
+
+    # --- Build embed ---
+    embed = discord.Embed(
+        title=f"Tournament Recap \u2014 {name}",
+        color=0x2ECC71 if total_pnl >= 0 else 0xE74C3C,
+        timestamp=datetime.now(),
+    )
+
+    embed.add_field(name="P&L", value=f"${total_pnl:+,.2f}", inline=True)
+    embed.add_field(name="ROI", value=f"{roi:+.1f}%", inline=True)
+    record = f"{wins}-{losses}"
+    if pushes:
+        record += f"-{pushes}"
+    embed.add_field(name="Record", value=f"{record} (W-L{'P' if pushes else ''})", inline=True)
+
+    # By market table
+    if by_market:
+        lines = [f"{'Market':<14} {'Bets':>4} {'P&L':>9} {'W-L':>5}"]
+        for mt, d in sorted(by_market.items(), key=lambda x: x[1]["pnl"], reverse=True):
+            lines.append(
+                f"{mt:<14} {d['count']:>4} ${d['pnl']:>+8,.0f} {d['w']}-{d['l']}"
+            )
+        embed.add_field(
+            name="By Market",
+            value=f"```\n" + "\n".join(lines) + "\n```",
+            inline=False,
+        )
+
+    # By book table
+    if by_book:
+        lines = [f"{'Book':<14} {'Bets':>4} {'P&L':>9}"]
+        for book, d in sorted(by_book.items(), key=lambda x: x[1]["pnl"], reverse=True):
+            lines.append(f"{book:<14} {d['count']:>4} ${d['pnl']:>+8,.0f}")
+        embed.add_field(
+            name="By Book",
+            value=f"```\n" + "\n".join(lines) + "\n```",
+            inline=False,
+        )
+
+    # Edge calibration
+    embed.add_field(
+        name="Edge Calibration",
+        value=f"Avg Edge: {avg_edge:.1f}%  |  Actual ROI: {roi:+.1f}%  |  Avg CLV: {avg_clv:+.1f}%",
+        inline=False,
+    )
+
+    # Season footer
+    embed.set_footer(
+        text=(
+            f"Season: {season_bets} bets | ${season_staked:,.0f} staked | "
+            f"${season_pnl:+,.0f} P&L | {season_roi:+.1f}% ROI | "
+            f"Bankroll: ${bankroll:,.2f}"
+        ),
+    )
+
+    return embed
+
+
 def _run_preround_scan(tour: str, round_number: int | None):
     """Run preround scan (blocking — called via to_thread)."""
     bankroll = db.get_bankroll()
@@ -1601,6 +1753,11 @@ async def cmd_settle(
         )
 
     await interaction.followup.send(embed=embed)
+
+    # Post tournament summary if all bets are now settled
+    tid = tournament_id or bot.last_scan_tournament_id
+    if tid:
+        await bot._post_tournament_summary(tid, channel=interaction.channel)
 
 
 def _run_settlement(tournament_id: str | None, tour: str):
