@@ -11,6 +11,7 @@ from lib.aggregations import (
     format_date_range,
 )
 from lib.theme import format_currency, format_percentage
+from lib.charts import build_exposure_by_market
 
 
 def render():
@@ -68,6 +69,18 @@ def render():
             st.metric("Potential Return", format_currency(total["potential_return"]))
 
         st.caption("Potential return assumes no dead heats.")
+
+        # 5. Exposure chart (if 2+ market types)
+        if len(market_types) >= 2:
+            fig = build_exposure_by_market(bets)
+            if fig is not None:
+                st.plotly_chart(
+                    fig,
+                    theme="streamlit",
+                    use_container_width=True,
+                    config={"responsive": True},
+                    key="exposure_by_market",
+                )
 
         # 6. Filter controls + active bet table
         _render_bet_table(bets)
