@@ -37,6 +37,18 @@ from src.pipeline.pull_matchups import (
     pull_round_matchups,
     pull_3balls,
 )
+from src.pipeline.pull_kalshi import (
+    pull_kalshi_outrights, pull_kalshi_matchups,
+    merge_kalshi_into_outrights, merge_kalshi_into_matchups,
+)
+from src.pipeline.pull_polymarket import (
+    pull_polymarket_outrights,
+    merge_polymarket_into_outrights,
+)
+from src.pipeline.pull_prophetx import (
+    pull_prophetx_outrights, pull_prophetx_matchups,
+    merge_prophetx_into_outrights, merge_prophetx_into_matchups,
+)
 from src.pipeline.pull_live import pull_live_predictions
 from src.pipeline.pull_live_edges import pull_live_edges
 from src.pipeline.pull_results import fetch_results, match_bets_to_results
@@ -70,15 +82,19 @@ class EVBot(discord.Client):
         self.last_scan_tournament_id: str | None = None
         self.last_scan_time: datetime | None = None
         self._alert_task: asyncio.Task | None = None
+        self._edge_gone_task: asyncio.Task | None = None
         self._live_monitor_task: asyncio.Task | None = None
         self._live_monitor_active: bool = False
         self._live_alerted_keys: set[str] = set()  # Avoid duplicate alerts
+        # Edge-gone tracking: list of (candidate, channel_id, alert_time)
+        self._alerted_candidates: list[tuple[CandidateBet, int, datetime]] = []
 
     async def setup_hook(self):
         await self.tree.sync()
         log.info("Slash commands synced")
         if config.ALERT_ENABLED:
             self._alert_task = self.loop.create_task(self._scheduled_alerts())
+            self._edge_gone_task = self.loop.create_task(self._edge_gone_loop())
             log.info("Scheduled alerts enabled (channel %s)", config.DISCORD_ALERT_CHANNEL_ID)
 
     async def on_ready(self):
@@ -132,6 +148,19 @@ class EVBot(discord.Client):
         except Exception as e:
             log.error("Scheduled %s scan failed: %s", scan_type, e)
             await channel.send(f"Scheduled {scan_type} scan failed: {e}")
+            return
+
+        if result is None:
+            embed = discord.Embed(
+                title=f"Scheduled Scan Skipped",
+                description=(
+                    "Tournament is live — DG baseline model not available.\n"
+                    "Use `/monitor start` for live edge detection instead."
+                ),
+                color=0x95A5A6,
+                timestamp=datetime.now(),
+            )
+            await channel.send(embed=embed)
             return
 
         candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
@@ -213,6 +242,104 @@ class EVBot(discord.Client):
             mention = f"<@&{config.DISCORD_ALERT_ROLE_ID}> "
 
         await channel.send(content=f"{mention}{len(high_edge)} high-edge bet(s) found!" if mention else None, embed=embed)
+
+        # Track for edge-gone re-check
+        now = datetime.now()
+        for c in candidates:
+            self._alerted_candidates.append((c, channel.id, now))
+
+    # ------------------------------------------------------------------
+    # Edge-gone re-check loop
+    # ------------------------------------------------------------------
+    async def _edge_gone_loop(self):
+        """Periodically re-check alerted edges and notify if they've moved."""
+        await self.wait_until_ready()
+        log.info("Edge-gone checker started")
+
+        while not self.is_closed():
+            await asyncio.sleep(30 * 60)  # Check every 30 minutes
+
+            if not self._alerted_candidates:
+                continue
+
+            # Only re-check candidates from the last 12 hours
+            cutoff = datetime.now() - timedelta(hours=12)
+            active = [(c, ch_id, t) for c, ch_id, t in self._alerted_candidates
+                      if t > cutoff]
+            self._alerted_candidates = active
+
+            if not active:
+                continue
+
+            try:
+                result = await asyncio.to_thread(_run_pretournament_scan, "pga")
+            except Exception as e:
+                log.error("Edge-gone re-check failed: %s", e)
+                continue
+
+            if result is None:
+                # Tournament is live — skip re-check
+                continue
+
+            fresh_candidates, *_ = result
+
+            # Build lookup of fresh candidates by player+market+book
+            fresh_lookup: dict[str, CandidateBet] = {}
+            for fc in fresh_candidates:
+                key = f"{fc.player_name}|{fc.market_type}|{fc.best_book}"
+                fresh_lookup[key] = fc
+
+            # Find edges that are gone or significantly reduced
+            gone: list[tuple[CandidateBet, str]] = []
+            seen_keys: set[str] = set()
+
+            for c, ch_id, alert_time in active:
+                key = f"{c.player_name}|{c.market_type}|{c.best_book}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+                fresh = fresh_lookup.get(key)
+                if fresh is None:
+                    gone.append((c, "edge gone"))
+                elif fresh.edge < c.edge * 0.5:
+                    gone.append((c, f"edge shrunk {c.edge*100:.1f}% -> {fresh.edge*100:.1f}%"))
+
+            if not gone:
+                continue
+
+            # Post edge-gone alert to the first channel we alerted
+            ch_id = active[0][1]
+            channel = self.get_channel(ch_id)
+            if not channel:
+                continue
+
+            embed = discord.Embed(
+                title="Edge Movement Alert",
+                description=f"**{len(gone)}** previously-alerted edge(s) have moved",
+                color=0x95A5A6,
+                timestamp=datetime.now(),
+            )
+
+            lines = []
+            for c, reason in gone[:10]:
+                name = c.player_name[:20]
+                lines.append(f"{name:<20} {c.market_type:<6} {c.best_book:<10} {reason}")
+            embed.add_field(
+                name="Details",
+                value=f"```\n" + "\n".join(lines) + "\n```",
+                inline=False,
+            )
+            embed.set_footer(text="Re-check odds before placing")
+
+            await channel.send(embed=embed)
+
+            # Remove gone edges from tracking
+            gone_keys = {f"{c.player_name}|{c.market_type}|{c.best_book}" for c, _ in gone}
+            self._alerted_candidates = [
+                (c, ch_id, t) for c, ch_id, t in self._alerted_candidates
+                if f"{c.player_name}|{c.market_type}|{c.best_book}" not in gone_keys
+            ]
 
     # ------------------------------------------------------------------
     # Live round monitoring
@@ -739,6 +866,13 @@ async def cmd_scan(
         await interaction.followup.send(f"Scan failed: {e}")
         return
 
+    if result is None:
+        await interaction.followup.send(
+            "Tournament is live — DG baseline model not available. "
+            "Use `/monitor once` for a live edge scan instead."
+        )
+        return
+
     candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
 
     # Cache for /place
@@ -809,26 +943,38 @@ async def cmd_scan(
 
 
 def _run_pretournament_scan(tour: str):
-    """Run pretournament scan (blocking — called via to_thread)."""
+    """Run pretournament scan (blocking — called via to_thread).
+
+    Returns None if the tournament is live (stale odds guard).
+    Otherwise returns (candidates, tournament_id, tournament_name,
+                       bankroll, weekly_exposure, tournament_exposure).
+    """
     bankroll = db.get_bankroll()
     existing_bets = db.get_open_bets_for_week()
     weekly_exposure = sum(b.get("stake", 0) for b in existing_bets)
 
     outrights = pull_all_outrights(None, tour)
+
+    # Staleness guard: abort if DG says the tournament is live
+    if outrights.get("_is_live"):
+        log.warning("Pre-tournament scan aborted: tournament is live (%s)",
+                     outrights.get("_notes", ""))
+        return None
+
     matchups = pull_tournament_matchups(None, tour)
 
     # Detect tournament
-    tournament_name = "Unknown"
+    tournament_name = outrights.get("_event_name", "Unknown")
     tournament_id = None
     is_signature = False
     dg_event_id = None
 
-    if outrights.get("win") and isinstance(outrights["win"], list) and outrights["win"]:
-        first = outrights["win"][0]
-        tournament_name = first.get("event_name", tournament_name)
-        dg_event_id = str(first.get("event_id", "")) or None
-
-    # Fallback: pull tournament name from DG field-updates API
+    if tournament_name == "Unknown":
+        # Fallback: try first player record or field-updates API
+        if outrights.get("win") and isinstance(outrights["win"], list) and outrights["win"]:
+            first = outrights["win"][0]
+            tournament_name = first.get("event_name", tournament_name)
+            dg_event_id = str(first.get("event_id", "")) or None
     if tournament_name == "Unknown":
         try:
             from src.api.datagolf import DataGolfClient
@@ -836,6 +982,14 @@ def _run_pretournament_scan(tour: str):
             field_resp = dg.get_field_updates(tour=tour)
             if field_resp["status"] == "ok":
                 tournament_name = field_resp["data"].get("event_name", tournament_name)
+        except Exception:
+            pass
+
+    # Resolve DG event ID for DB lookup
+    if not dg_event_id and tournament_name != "Unknown":
+        try:
+            from src.api.datagolf import DataGolfClient
+            dg_event_id = DataGolfClient().resolve_event_id(tournament_name, tour)
         except Exception:
             pass
 
@@ -854,6 +1008,48 @@ def _run_pretournament_scan(tour: str):
                 season=season,
             )
             tournament_id = t.get("id")
+
+    # Date range for prediction market matching
+    today = datetime.now().strftime("%Y-%m-%d")
+    end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
+
+    # Pull and merge Kalshi odds
+    try:
+        if tournament_name != "Unknown":
+            kalshi_outrights = pull_kalshi_outrights(
+                tournament_name, today, end_date)
+            if any(len(v) > 0 for v in kalshi_outrights.values()):
+                merge_kalshi_into_outrights(outrights, kalshi_outrights)
+            kalshi_matchup_data = pull_kalshi_matchups(
+                tournament_name, today, end_date)
+            if kalshi_matchup_data:
+                merge_kalshi_into_matchups(matchups, kalshi_matchup_data)
+    except Exception as e:
+        log.warning("Kalshi unavailable: %s", e)
+
+    # Pull and merge Polymarket odds
+    if config.POLYMARKET_ENABLED:
+        try:
+            poly_outrights = pull_polymarket_outrights(
+                tournament_name, today, end_date)
+            if any(len(v) > 0 for v in poly_outrights.values()):
+                merge_polymarket_into_outrights(outrights, poly_outrights)
+        except Exception as e:
+            log.warning("Polymarket unavailable: %s", e)
+
+    # Pull and merge ProphetX odds
+    if config.PROPHETX_ENABLED:
+        try:
+            px_outrights = pull_prophetx_outrights(
+                tournament_name, today, end_date)
+            if any(len(v) > 0 for v in px_outrights.values()):
+                merge_prophetx_into_outrights(outrights, px_outrights)
+            px_matchups = pull_prophetx_matchups(
+                tournament_name, today, end_date)
+            if px_matchups:
+                merge_prophetx_into_matchups(matchups, px_matchups)
+        except Exception as e:
+            log.warning("ProphetX unavailable: %s", e)
 
     # Calculate edges
     all_candidates = []

@@ -282,6 +282,7 @@ def pull_live_edges(
                  "opponent_2_name": c.opponent_2_name}
                 for c in all_candidates
             ],
+            exchange_only=True,
         )
         if edges:
             stats[f"{our_market}_edges"] = len(edges)

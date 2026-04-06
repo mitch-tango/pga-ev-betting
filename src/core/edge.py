@@ -116,6 +116,7 @@ def calculate_placement_edges(
     is_signature: bool = False,
     bankroll: float = 1000.0,
     existing_bets: list[dict] | None = None,
+    exchange_only: bool = False,
 ) -> list[CandidateBet]:
     """Calculate +EV placement edges from outright odds data.
 
@@ -126,6 +127,10 @@ def calculate_placement_edges(
         is_signature: True for $20M+ events
         bankroll: current bankroll for Kelly sizing
         existing_bets: list of existing bets (for correlation haircut)
+        exchange_only: If True, only consider public exchanges (not sportsbooks)
+            for best-book selection. Sportsbook odds still contribute to
+            book consensus but cannot be the bettable line. Use during live
+            periods when sportsbook outright boards are stale.
 
     Returns:
         List of CandidateBet sorted by edge descending
@@ -154,6 +159,12 @@ def calculate_placement_edges(
             # Book odds are strings like "-370" or "+250"
             if isinstance(val, str) and (val.startswith("+") or val.startswith("-")):
                 books_in_data.add(key)
+
+    # In exchange-only mode, restrict to public exchanges for both consensus
+    # and best-book selection.  Sportsbook outright odds go stale during live
+    # play and would pollute the blended probability.
+    if exchange_only:
+        books_in_data = books_in_data & config.EXCHANGE_BOOKS
 
     # Step 2: De-vig each book's full field
     book_devigged = {}

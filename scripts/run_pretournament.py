@@ -301,6 +301,18 @@ def main():
     # ---- Pull Data ----
     print("\nPulling outright odds...")
     outrights = pull_all_outrights(tournament_slug, tour)
+
+    # Staleness guard: abort if the tournament is live or completed
+    if outrights.get("_is_live"):
+        print(f"\n  Tournament is LIVE — DG baseline model not available.")
+        if outrights.get("_notes"):
+            print(f"  DG says: {outrights['_notes']}")
+        if outrights.get("_last_updated"):
+            print(f"  Last updated: {outrights['_last_updated']}")
+        print(f"\n  Pre-tournament scan requires pre-tournament odds.")
+        print(f"  Use 'run_live_check.py' for live edge detection instead.")
+        return
+
     for market, data in outrights.items():
         if market.startswith("_"):
             continue

@@ -163,6 +163,11 @@ DEADHEAT_AVG_REDUCTION = {
 # Books exempt from dead-heat adjustment (binary contract payout, no DH reduction)
 NO_DEADHEAT_BOOKS = {"kalshi", "polymarket"}
 
+# Public exchanges — continuously traded orderbooks, reliable during live play.
+# Sportsbook outrights go stale once rounds start and should not be used for
+# edge detection during live periods.
+EXCHANGE_BOOKS = {"kalshi", "polymarket", "prophetx"}
+
 # --- Signature Event ---
 SIGNATURE_PURSE_THRESHOLD = 20_000_000
 
