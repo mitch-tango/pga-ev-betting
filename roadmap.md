@@ -19,6 +19,8 @@ Last updated: 2026-04-06
 - **Betsperts Golf integration**: API client for undocumented ShotLink-powered SG data; dual-window course-fit signal (12r form for ball-striking, 50r baseline for short game); course difficulty weighting (SG categories weighted by course-specific difficulty ratings); candidate annotation with [++]/[+]/[-]/[--] agreement signals; Discord `/coursefit` and `/fieldsg` commands
 - **Expert picks signal**: YouTube transcript extraction (Rick Gehman, Pat Mayo, Betsperts) + Claude API (Haiku) pick extraction; aggregated consensus signal per player with sentiment scoring; candidate annotation with EP column; Discord `/expertpicks` command; Betsperts article support via cached text files
 
+- **Dashboard / Web UI**: Streamlit app with 4 pages (Active Bets, Performance, Bankroll, Model Health); Supabase data layer with cached queries; Plotly charts for P&L curves, calibration, CLV trends, edge tier analysis; deployed on Streamlit Cloud
+
 ---
 
 ## Next Up
@@ -100,7 +102,7 @@ Systematic analysis of DG/sportsbook blend weights and per-book value across all
 
 **Open questions to resolve:**
 - Does DG's OAD historical archive provide player-level predicted probs + actual finishes? If so, extend tranche analysis beyond matchups into win/placement/make-cut
-- Should `deep_field` threshold (rank 61+) be higher or lower? Tranche analysis will inform this
+- Should `deep_field` threshold (rank 61+) be higher or lower? Tranche analysis will inform this — the current hardcoded cutoff should be replaced by tranche-specific blend weights
 - Consider tranche-aware config structure: `"win": {"favorite": {...}, "mid": {...}, "longshot": {...}}`
 
 ### 2. Bankroll & Kelly Sizing Refinements
@@ -120,13 +122,30 @@ Expand beyond DG's aggregated feed:
 - PrizePicks / Underdog for player props
 - Integrate as additional book columns in the existing pipeline
 
-### 4. Dashboard / Web UI
-**Priority: Low** | Effort: High
+### 4. Live Edge Calibration
+**Priority: High** | Effort: Medium
 
-- Web dashboard for monitoring edges, bankroll curve, historical performance
-- Visualize ROI by market, book, time period
-- Alert configuration UI
-- Could be a simple Streamlit app or full Next.js build
+The current 8% live edge threshold is a blunt guard against stale sportsbook odds during rounds. A data-driven threshold would capture more live edges without increasing false positives.
+
+**Phase 1 — Historical analysis** (after accumulating live scan data):
+- Compare DG live model predictions vs actual outcomes for edges detected during rounds
+- Measure: how quickly do sportsbook odds go stale after DG updates? (5 min? 30 min?)
+- Segment by market type — matchups may have different staleness profiles than outrights
+- Analyze: at what edge threshold does live ROI turn positive? (currently assumed 8%)
+
+**Phase 2 — Dynamic threshold** (if Phase 1 shows variance):
+- Replace fixed 8% with market-specific live thresholds
+- Consider time-of-day factor (early round = fresher lines vs mid-round)
+- Add staleness metric: time since last DG update vs time since last book line move
+
+**Phase 3 — Exchange arbitrage optimization:**
+- Kalshi/Polymarket update faster than sportsbooks during live play
+- Measure exchange-vs-sportsbook staleness differential
+- Potentially lower exchange-only threshold below 8%
+
+**Open questions:**
+- How many live scans needed for statistical significance?
+- Should the threshold vary by round (R1-R2 vs weekend)?
 
 ### 5. Backtest Expansion
 **Priority: Low** | Effort: Medium
