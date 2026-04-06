@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 # Explicit exclusions for non-PGA tours
 _NON_PGA_EXCLUSIONS = ["liv", "dpwt", "dp world", "lpga", "korn ferry"]
 
+# Tournament name aliases — prediction markets often use different names than DG.
+_TOURNAMENT_ALIASES = {
+    "masters tournament": ["augusta national invitational", "the masters", "masters"],
+    "the open championship": ["open championship", "british open"],
+    "u.s. open": ["us open"],
+    "the players championship": ["players championship", "tpc sawgrass"],
+}
+
 # Strip common prefixes/suffixes before fuzzy comparison
 _TITLE_PREFIX_PATTERN = re.compile(r"^pga\s+tour:\s*", re.IGNORECASE)
 _TITLE_SUFFIX_PATTERN = re.compile(r"\s+(?:winner|top\s+\d+)\s*$", re.IGNORECASE)
@@ -32,9 +40,9 @@ _NAME_FIELDS = ("competitor_name", "participant", "player", "name", "playerName"
 _COMPETITORS_FIELDS = ("competitors", "participants", "selections")
 
 # Date field candidates for start
-_START_DATE_FIELDS = ("start_date", "startDate", "event_date", "start")
+_START_DATE_FIELDS = ("start_date", "startDate", "event_date", "start", "scheduled")
 # Date field candidates for end
-_END_DATE_FIELDS = ("end_date", "endDate", "event_end_date", "end")
+_END_DATE_FIELDS = ("end_date", "endDate", "event_end_date", "end", "scheduled")
 # Title field candidates
 _TITLE_FIELDS = ("name", "title", "event_name", "eventName")
 
@@ -93,14 +101,26 @@ def match_tournament(
     end_date = _parse_date(tournament_end)
     tourney_lower = tournament_name.lower().strip()
 
+    # Build list of names to match against (primary + aliases)
+    match_names = [tourney_lower]
+    match_names.extend(_TOURNAMENT_ALIASES.get(tourney_lower, []))
+
     def _name_score(event: dict) -> float:
         title = _get_field(event, *_TITLE_FIELDS, default="")
         title_lower = title.lower()
-        if tourney_lower in title_lower:
-            return 1.0
         cleaned = _TITLE_PREFIX_PATTERN.sub("", title_lower)
         cleaned = _TITLE_SUFFIX_PATTERN.sub("", cleaned).strip()
-        return SequenceMatcher(None, tourney_lower, cleaned).ratio()
+
+        best = 0.0
+        for name in match_names:
+            if name in title_lower:
+                best = max(best, 1.0)
+            score = SequenceMatcher(None, name, cleaned).ratio()
+            best = max(best, score)
+        # Tiebreaker: prefer events with "winner" in the title (outright markets)
+        if "winner" in title_lower:
+            best += 0.1
+        return best
 
     # Pass 1: date range overlap — prefer best name match
     date_candidates = []
@@ -152,15 +172,19 @@ def classify_markets(markets: list[dict]) -> dict[str, list[dict]]:
     """Classify ProphetX markets by type.
 
     Returns sparse dict: {"win": [...], "matchup": [...], "t10": [...], etc.}
+
+    ProphetX market structure:
+    - ``type`` = "moneyline" for outright winner, "custom" for props
+    - ``name`` = player name (for outrights) or market title
+    - ``selections`` = [[YES levels], [NO levels]] orderbook
+    - ``outcomes`` = [{"id":1,"name":"YES"}, {"id":2,"name":"NO"}]
     """
     result: dict[str, list[dict]] = {}
 
     for market in markets:
-        market_type = str(market.get("market_type", "")).lower()
+        market_type = str(market.get("market_type", market.get("type", ""))).lower()
         sub_type = str(market.get("sub_type", "")).lower()
         name = str(market.get("name", "")).lower()
-        competitors = _get_field(market, *_COMPETITORS_FIELDS, default=[])
-        num_competitors = len(competitors) if isinstance(competitors, list) else 0
 
         classified = None
 
@@ -171,12 +195,18 @@ def classify_markets(markets: list[dict]) -> dict[str, list[dict]]:
             classified = "t20"
         elif "cut" in name:
             classified = "make_cut"
+        elif "matchup" in sub_type:
+            classified = "matchup"
         elif market_type == "moneyline" and "outright" in sub_type:
             classified = "win"
-        elif market_type == "moneyline" and num_competitors == 2:
-            classified = "matchup"
-        elif "matchup" in sub_type and num_competitors == 2:
-            classified = "matchup"
+        elif market_type == "moneyline":
+            # ProphetX moneyline markets from a "Tournament Winner" event
+            # are individual player outrights (YES/NO binary contracts).
+            # Matchups come from separate "Matchups" events with 2 named outcomes.
+            outcomes = market.get("outcomes", [])
+            outcome_names = {str(o.get("name", "")).upper() for o in outcomes} if isinstance(outcomes, list) else set()
+            if outcome_names == {"YES", "NO"}:
+                classified = "win"
 
         if classified:
             result.setdefault(classified, []).append(market)
@@ -190,21 +220,37 @@ def classify_markets(markets: list[dict]) -> dict[str, list[dict]]:
 def extract_player_name_outright(market: dict) -> str | None:
     """Extract player name from an outright market.
 
-    Tries competitor data first, then direct fields on the market.
+    ProphetX outright markets use the ``name`` field directly as the player
+    name (e.g., "Scottie Scheffler"). Falls back to competitor entries and
+    other field names for forward-compatibility.
     """
+    # Primary: ProphetX uses market["name"] as the player name for outrights
+    market_name = market.get("name")
+    if market_name and isinstance(market_name, str):
+        # Sanity check: skip names that look like event titles rather than players
+        lower = market_name.lower()
+        if not any(kw in lower for kw in ("tournament", "top 10", "top 20",
+                                           "top 5", "winner", "matchup",
+                                           "bogey", "hole in one", "will ")):
+            return _clean_name(market_name)
+
+    # Fallback: try competitor/participant entries
     competitors = _get_field(market, *_COMPETITORS_FIELDS, default=[])
     if isinstance(competitors, list) and competitors:
-        name = _extract_name_from_entry(competitors[0])
-        if name:
-            return name
+        first = competitors[0]
+        if isinstance(first, dict):
+            name = _extract_name_from_entry(first)
+            if name:
+                return name
 
-    # Fallback: try player name fields directly on market (excluding market title 'name')
+    # Last resort: other name fields
     for field in ("competitor_name", "participant", "player", "playerName"):
         val = market.get(field)
         if val and isinstance(val, str):
             return _clean_name(val)
 
-    logger.warning("ProphetX: could not extract player name from market: %s", market)
+    logger.warning("ProphetX: could not extract player name from market: %s",
+                   {k: v for k, v in market.items() if k != "selections"})
     return None
 
 

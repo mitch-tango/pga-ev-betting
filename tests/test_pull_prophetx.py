@@ -55,6 +55,7 @@ class TestDetectOddsFormat:
 
 
 def _make_competitor(name, odds=0.25, oi=200, bid=0.23, ask=0.27):
+    """Legacy competitor format for matchup tests."""
     return {
         "competitor_name": name,
         "odds": odds,
@@ -64,7 +65,27 @@ def _make_competitor(name, odds=0.25, oi=200, bid=0.23, ask=0.27):
     }
 
 
+def _make_outright_market(player_name, odds=600, total_stake=500):
+    """Build a ProphetX outright market in the real orderbook format.
+
+    Each market is one player with selections = [[YES levels], [NO levels]].
+    """
+    return {
+        "name": player_name,
+        "type": "moneyline",
+        "status": "active",
+        "totalStake": total_stake,
+        "outcomes": [{"id": 1, "name": "YES"}, {"id": 2, "name": "NO"}],
+        "selections": [
+            [{"id": 1, "name": "YES", "odds": odds, "displayOdds": f"+{odds}",
+              "value": 100, "stake": total_stake}],
+            None,
+        ],
+    }
+
+
 def _make_market(market_type, sub_type, name, competitors):
+    """Legacy market format for matchup tests."""
     return {
         "market_type": market_type,
         "sub_type": sub_type,
@@ -90,18 +111,17 @@ class TestPullProphetxOutrights:
     @patch("src.pipeline.pull_prophetx.match_tournament")
     @patch("src.pipeline.pull_prophetx.classify_markets")
     @patch("src.pipeline.pull_prophetx.resolve_prophetx_player")
-    def test_binary_format_outrights(
+    def test_american_format_outrights(
         self, mock_resolve, mock_classify, mock_match, mock_client_cls,
     ):
-        """Binary format: returns mid_prob and ask_prob."""
+        """American format via orderbook: returns mid_prob and American string."""
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
         event = _make_event("The Masters", "2026-04-09", "2026-04-12")
         mock_match.return_value = event
 
-        competitors = [_make_competitor("Scottie Scheffler", odds=0.25, bid=0.23, ask=0.27)]
-        win_market = _make_market("moneyline", "outright", "Winner", competitors)
+        win_market = _make_outright_market("Scottie Scheffler", odds=600)
         mock_client.get_markets_for_events.return_value = [win_market]
         mock_classify.return_value = {"win": [win_market]}
         mock_resolve.return_value = {"canonical_name": "Scottie Scheffler"}
@@ -112,65 +132,37 @@ class TestPullProphetxOutrights:
         assert len(result["win"]) == 1
         player = result["win"][0]
         assert player["player_name"] == "Scottie Scheffler"
-        assert player["odds_format"] == "binary"
+        assert player["odds_format"] == "american"
+        assert "prophetx_american" in player
         assert "prophetx_mid_prob" in player
-        assert "prophetx_ask_prob" in player
 
     @patch("src.pipeline.pull_prophetx.ProphetXClient")
     @patch("src.pipeline.pull_prophetx.match_tournament")
     @patch("src.pipeline.pull_prophetx.classify_markets")
     @patch("src.pipeline.pull_prophetx.resolve_prophetx_player")
-    def test_american_int_outrights(
+    def test_multiple_players(
         self, mock_resolve, mock_classify, mock_match, mock_client_cls,
     ):
-        """American int format: no ask_prob, stores American string directly."""
+        """Multiple outright markets produce multiple players."""
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
         event = _make_event("The Masters", "2026-04-09", "2026-04-12")
         mock_match.return_value = event
 
-        competitors = [_make_competitor("Rory McIlroy", odds=400)]
-        win_market = _make_market("moneyline", "outright", "Winner", competitors)
-        mock_client.get_markets_for_events.return_value = [win_market]
-        mock_classify.return_value = {"win": [win_market]}
-        mock_resolve.return_value = {"canonical_name": "Rory McIlroy"}
+        m1 = _make_outright_market("Rory McIlroy", odds=1350)
+        m2 = _make_outright_market("Jon Rahm", odds=1150)
+        mock_client.get_markets_for_events.return_value = [m1, m2]
+        mock_classify.return_value = {"win": [m1, m2]}
+        mock_resolve.side_effect = [
+            {"canonical_name": "Rory McIlroy"},
+            {"canonical_name": "Jon Rahm"},
+        ]
 
         result = pull_prophetx_outrights("The Masters", "2026-04-09", "2026-04-12")
 
         assert "win" in result
-        player = result["win"][0]
-        assert player["player_name"] == "Rory McIlroy"
-        assert player["odds_format"] == "american"
-        assert "prophetx_american" in player
-        assert "prophetx_ask_prob" not in player
-
-    @patch("src.pipeline.pull_prophetx.ProphetXClient")
-    @patch("src.pipeline.pull_prophetx.match_tournament")
-    @patch("src.pipeline.pull_prophetx.classify_markets")
-    @patch("src.pipeline.pull_prophetx.resolve_prophetx_player")
-    def test_american_string_outrights(
-        self, mock_resolve, mock_classify, mock_match, mock_client_cls,
-    ):
-        """American string format ('+400')."""
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-
-        event = _make_event("The Masters", "2026-04-09", "2026-04-12")
-        mock_match.return_value = event
-
-        competitors = [_make_competitor("Jon Rahm", odds="+400")]
-        win_market = _make_market("moneyline", "outright", "Winner", competitors)
-        mock_client.get_markets_for_events.return_value = [win_market]
-        mock_classify.return_value = {"win": [win_market]}
-        mock_resolve.return_value = {"canonical_name": "Jon Rahm"}
-
-        result = pull_prophetx_outrights("The Masters", "2026-04-09", "2026-04-12")
-
-        assert "win" in result
-        player = result["win"][0]
-        assert player["odds_format"] == "american"
-        assert "prophetx_american" in player
+        assert len(result["win"]) == 2
 
     @patch("src.pipeline.pull_prophetx.ProphetXClient")
     @patch("src.pipeline.pull_prophetx.match_tournament")
@@ -185,46 +177,49 @@ class TestPullProphetxOutrights:
     @patch("src.pipeline.pull_prophetx.match_tournament")
     @patch("src.pipeline.pull_prophetx.classify_markets")
     @patch("src.pipeline.pull_prophetx.resolve_prophetx_player")
-    def test_filters_low_oi(
+    def test_filters_low_stake(
         self, mock_resolve, mock_classify, mock_match, mock_client_cls,
     ):
-        """Competitors below OI threshold are filtered out."""
+        """Markets below totalStake threshold are filtered out."""
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
         event = _make_event("The Masters", "2026-04-09", "2026-04-12")
         mock_match.return_value = event
 
-        competitors = [_make_competitor("Low OI Player", odds=0.25, oi=5)]
-        win_market = _make_market("moneyline", "outright", "Winner", competitors)
+        win_market = _make_outright_market("Low Stake Player", odds=600, total_stake=5)
         mock_client.get_markets_for_events.return_value = [win_market]
         mock_classify.return_value = {"win": [win_market]}
-        mock_resolve.return_value = {"canonical_name": "Low OI Player"}
+        mock_resolve.return_value = {"canonical_name": "Low Stake Player"}
 
         result = pull_prophetx_outrights("The Masters", "2026-04-09", "2026-04-12")
-        # No players should pass the filter
         assert result == {} or len(result.get("win", [])) == 0
 
     @patch("src.pipeline.pull_prophetx.ProphetXClient")
     @patch("src.pipeline.pull_prophetx.match_tournament")
     @patch("src.pipeline.pull_prophetx.classify_markets")
     @patch("src.pipeline.pull_prophetx.resolve_prophetx_player")
-    def test_filters_wide_spread(
+    def test_skips_market_without_selections(
         self, mock_resolve, mock_classify, mock_match, mock_client_cls,
     ):
-        """Competitors with spread > PROPHETX_MAX_SPREAD are filtered out."""
+        """Markets with no orderbook levels are skipped."""
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
         event = _make_event("The Masters", "2026-04-09", "2026-04-12")
         mock_match.return_value = event
 
-        # bid=0.10, ask=0.30 → spread=0.20, well above default 0.05
-        competitors = [_make_competitor("Wide Spread", odds=0.20, oi=200, bid=0.10, ask=0.30)]
-        win_market = _make_market("moneyline", "outright", "Winner", competitors)
+        win_market = {
+            "name": "Inactive Player",
+            "type": "moneyline",
+            "status": "inactive",
+            "totalStake": 0,
+            "outcomes": [{"id": 1, "name": "YES"}, {"id": 2, "name": "NO"}],
+            "selections": [None, None],
+        }
         mock_client.get_markets_for_events.return_value = [win_market]
         mock_classify.return_value = {"win": [win_market]}
-        mock_resolve.return_value = {"canonical_name": "Wide Spread"}
+        mock_resolve.return_value = {"canonical_name": "Inactive Player"}
 
         result = pull_prophetx_outrights("The Masters", "2026-04-09", "2026-04-12")
         assert result == {} or len(result.get("win", [])) == 0

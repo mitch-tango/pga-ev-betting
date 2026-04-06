@@ -322,7 +322,7 @@ class TestGetBooks:
     def test_single_token(self, mock_api):
         mock_api.return_value = {
             "status": "ok",
-            "data": [{"asset_id": "tok1", "bids": [{"price": "0.50"}], "asks": [{"price": "0.55"}]}],
+            "data": {"asset_id": "tok1", "bids": [{"price": "0.50"}], "asks": [{"price": "0.55"}]},
         }
 
         client = PolymarketClient()
@@ -332,16 +332,15 @@ class TestGetBooks:
         assert result["tok1"]["asks"][0]["price"] == "0.55"
 
     @patch.object(PolymarketClient, "_api_call")
-    def test_chunks_into_batches_of_50(self, mock_api):
-        # 75 tokens -> 2 calls (50 + 25)
-        tokens = [f"tok{i}" for i in range(75)]
+    def test_one_call_per_token(self, mock_api):
+        """Each token gets its own /book call (no batching)."""
+        tokens = [f"tok{i}" for i in range(3)]
 
         def side_effect(base_url, endpoint, params=None):
-            csv = params.get("token_ids", "") if params else ""
-            token_ids = csv.split(",") if csv else []
+            tid = params.get("token_id", "") if params else ""
             return {
                 "status": "ok",
-                "data": [{"asset_id": tid, "bids": [], "asks": []} for tid in token_ids],
+                "data": {"asset_id": tid, "bids": [], "asks": []},
             }
 
         mock_api.side_effect = side_effect
@@ -349,8 +348,8 @@ class TestGetBooks:
         client = PolymarketClient()
         result = client.get_books(tokens)
 
-        assert mock_api.call_count == 2
-        assert len(result) == 75
+        assert mock_api.call_count == 3
+        assert len(result) == 3
 
     @patch.object(PolymarketClient, "_api_call")
     def test_empty_token_list(self, mock_api):

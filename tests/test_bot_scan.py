@@ -49,26 +49,33 @@ class TestStalenessGuard:
         assert result is None
 
     @patch(f"{BOT}.resolve_candidates")
+    @patch(f"{BOT}.pull_prophetx_matchups", return_value=[])
+    @patch(f"{BOT}.pull_prophetx_outrights", return_value={})
+    @patch(f"{BOT}.pull_polymarket_outrights", return_value={})
+    @patch(f"{BOT}.pull_kalshi_matchups", return_value=[])
+    @patch(f"{BOT}.pull_kalshi_outrights", return_value={})
     @patch(f"{BOT}.pull_tournament_matchups", return_value=[])
     @patch(f"{BOT}.pull_all_outrights")
+    @patch("src.api.datagolf.DataGolfClient")
     @patch(f"{BOT}.db")
-    def test_returns_tuple_when_not_live(self, mock_db, mock_outrights,
-                                         mock_matchups, mock_resolve):
+    def test_returns_tuple_when_not_live(self, mock_db, mock_dg_cls,
+                                         mock_outrights, mock_matchups,
+                                         mock_kalshi_out, mock_kalshi_match,
+                                         mock_poly, mock_px_out, mock_px_match,
+                                         mock_resolve):
         mock_db.get_bankroll.return_value = 1000
         mock_db.get_open_bets_for_week.return_value = []
         mock_db.get_tournament.return_value = None
         mock_db.upsert_tournament.return_value = {"id": "t1"}
         mock_outrights.return_value = _base_outrights(is_live=False)
 
-        # Patch DG client for resolve_event_id
-        with patch(f"{BOT}.DataGolfClient", create=True) as mock_dg_cls:
-            mock_dg = MagicMock()
-            mock_dg_cls.return_value = mock_dg
-            mock_dg.resolve_event_id.return_value = "evt-123"
-            mock_dg.get_field_updates.return_value = {
-                "status": "ok", "data": {"event_name": "The Masters"}}
+        mock_dg = MagicMock()
+        mock_dg_cls.return_value = mock_dg
+        mock_dg.resolve_event_id.return_value = "evt-123"
+        mock_dg.get_field_updates.return_value = {
+            "status": "ok", "data": {"event_name": "The Masters"}}
 
-            result = _run_pretournament_scan("pga")
+        result = _run_pretournament_scan("pga")
 
         assert result is not None
         assert isinstance(result, tuple)
@@ -139,9 +146,10 @@ class TestPredictionMarketPull:
     @patch(f"{BOT}.pull_kalshi_outrights", side_effect=Exception("API down"))
     @patch(f"{BOT}.pull_tournament_matchups", return_value=[])
     @patch(f"{BOT}.pull_all_outrights")
+    @patch("src.api.datagolf.DataGolfClient")
     @patch(f"{BOT}.db")
     def test_graceful_degradation_on_api_failure(
-        self, mock_db, mock_outrights, mock_matchups,
+        self, mock_db, mock_dg_cls, mock_outrights, mock_matchups,
         mock_kalshi, mock_poly, mock_px, mock_resolve,
     ):
         """Pipeline should not crash when prediction market APIs fail."""
@@ -151,14 +159,13 @@ class TestPredictionMarketPull:
         mock_db.upsert_tournament.return_value = {"id": "t1"}
         mock_outrights.return_value = _base_outrights(is_live=False)
 
-        with patch(f"{BOT}.DataGolfClient", create=True) as mock_dg_cls:
-            mock_dg = MagicMock()
-            mock_dg_cls.return_value = mock_dg
-            mock_dg.resolve_event_id.return_value = "evt-123"
-            mock_dg.get_field_updates.return_value = {
-                "status": "ok", "data": {"event_name": "The Masters"}}
+        mock_dg = MagicMock()
+        mock_dg_cls.return_value = mock_dg
+        mock_dg.resolve_event_id.return_value = "evt-123"
+        mock_dg.get_field_updates.return_value = {
+            "status": "ok", "data": {"event_name": "The Masters"}}
 
-            result = _run_pretournament_scan("pga")
+        result = _run_pretournament_scan("pga")
 
         # Should still return a valid tuple (not crash)
         assert result is not None

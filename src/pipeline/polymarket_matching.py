@@ -24,6 +24,15 @@ logger = logging.getLogger(__name__)
 # Explicit exclusions for non-PGA tours
 _NON_PGA_EXCLUSIONS = ["liv", "dpwt", "lpga", "korn ferry"]
 
+# Tournament name aliases — prediction markets often use different names than DG.
+# Maps DG-style names (lowered) to alternative names used by markets.
+_TOURNAMENT_ALIASES = {
+    "masters tournament": ["augusta national invitational", "the masters", "masters"],
+    "the open championship": ["open championship", "british open"],
+    "u.s. open": ["us open"],
+    "the players championship": ["players championship", "tpc sawgrass"],
+}
+
 # Strip common prefixes before fuzzy comparison
 _TITLE_PREFIX_PATTERN = re.compile(r"^pga\s+tour:\s*", re.IGNORECASE)
 # Strip common suffixes before fuzzy comparison
@@ -82,14 +91,23 @@ def match_tournament(
 
     tourney_lower = tournament_name.lower().strip()
 
+    # Build list of names to match against (primary + aliases)
+    match_names = [tourney_lower]
+    match_names.extend(_TOURNAMENT_ALIASES.get(tourney_lower, []))
+
     def _name_score(title: str) -> float:
         """Score how well an event title matches the tournament name."""
         title_lower = title.lower()
-        if tourney_lower in title_lower:
-            return 1.0
         cleaned = _TITLE_PREFIX_PATTERN.sub("", title_lower)
         cleaned = _TITLE_SUFFIX_PATTERN.sub("", cleaned).strip()
-        return SequenceMatcher(None, tourney_lower, cleaned).ratio()
+
+        best = 0.0
+        for name in match_names:
+            if name in title_lower:
+                best = max(best, 1.0)
+            score = SequenceMatcher(None, name, cleaned).ratio()
+            best = max(best, score)
+        return best
 
     # Pass 1: date range overlap — prefer best name match among overlapping
     date_candidates = []

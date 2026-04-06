@@ -44,14 +44,43 @@ def _normalize_price(value) -> float | None:
     return v
 
 
+def _get_yes_bid(mkt: dict) -> float | None:
+    """Extract YES bid price from a Kalshi market dict.
+
+    Handles both legacy (yes_bid) and current (yes_bid_dollars) field names.
+    """
+    val = mkt.get("yes_bid") or mkt.get("yes_bid_dollars")
+    return float(val) if val is not None else None
+
+
+def _get_yes_ask(mkt: dict) -> float | None:
+    """Extract YES ask price from a Kalshi market dict.
+
+    Handles both legacy (yes_ask) and current (yes_ask_dollars) field names.
+    """
+    val = mkt.get("yes_ask") or mkt.get("yes_ask_dollars")
+    return float(val) if val is not None else None
+
+
+def _get_open_interest(mkt: dict) -> int:
+    """Extract open interest from a Kalshi market dict.
+
+    Handles both legacy (open_interest) and current (open_interest_fp) field names.
+    """
+    val = mkt.get("open_interest") or mkt.get("open_interest_fp")
+    if val is None:
+        return 0
+    return int(float(val))
+
+
 def _detect_cent_format(markets: list[dict]) -> bool:
     """Detect if markets use integer cent format (values > 1.0)."""
     for mkt in markets:
-        for field in ("yes_bid", "yes_ask"):
-            val = mkt.get(field)
+        for getter in (_get_yes_bid, _get_yes_ask):
+            val = getter(mkt)
             if val is not None:
                 try:
-                    if float(val) > 1.0:
+                    if val > 1.0:
                         return True
                 except (ValueError, TypeError):
                     pass
@@ -119,8 +148,8 @@ def pull_kalshi_outrights(
 
                 # Read and normalize prices
                 try:
-                    bid = _normalize_price(mkt.get("yes_bid"))
-                    ask = _normalize_price(mkt.get("yes_ask"))
+                    bid = _normalize_price(_get_yes_bid(mkt))
+                    ask = _normalize_price(_get_yes_ask(mkt))
                 except (ValueError, TypeError):
                     logger.warning("Kalshi: invalid price data for %s", raw_name)
                     continue
@@ -135,7 +164,7 @@ def pull_kalshi_outrights(
 
                 # Read open interest
                 try:
-                    oi = int(mkt.get("open_interest", 0))
+                    oi = _get_open_interest(mkt)
                 except (ValueError, TypeError):
                     continue
 
@@ -218,8 +247,8 @@ def pull_kalshi_matchups(
 
             # Read and normalize prices
             try:
-                p1_bid = _normalize_price(mkt.get("yes_bid"))
-                p1_ask = _normalize_price(mkt.get("yes_ask"))
+                p1_bid = _normalize_price(_get_yes_bid(mkt))
+                p1_ask = _normalize_price(_get_yes_ask(mkt))
             except (ValueError, TypeError):
                 continue
 
@@ -232,7 +261,7 @@ def pull_kalshi_matchups(
 
             # Open interest (same for both sides of a binary contract)
             try:
-                oi = int(mkt.get("open_interest", 0))
+                oi = _get_open_interest(mkt)
             except (ValueError, TypeError):
                 continue
 

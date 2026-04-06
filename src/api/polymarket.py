@@ -90,10 +90,10 @@ class PolymarketClient:
                     logger.warning("Rate limited. Waiting %ds...", wait)
                     time.sleep(wait)
 
-                elif resp.status_code == 400:
+                elif resp.status_code in (400, 404):
                     return {
                         "status": "error",
-                        "code": 400,
+                        "code": resp.status_code,
                         "message": resp.text[:500],
                     }
 
@@ -280,8 +280,8 @@ class PolymarketClient:
     def get_books(self, token_ids: list[str]) -> dict[str, dict]:
         """Fetch orderbook data from CLOB API.
 
-        Chunks requests into batches of 50 token_ids to avoid
-        414 URI Too Long errors.
+        Calls the /book endpoint once per token_id (the CLOB API does
+        not support batch requests).
 
         Returns:
             Dict of token_id -> {"bids": [...], "asks": [...]}.
@@ -290,20 +290,15 @@ class PolymarketClient:
             return {}
 
         merged = {}
-        for i in range(0, len(token_ids), self.BOOK_CHUNK_SIZE):
-            chunk = token_ids[i:i + self.BOOK_CHUNK_SIZE]
+        for token_id in token_ids:
             response = self._api_call(
-                self.clob_url, "/books",
-                params={"token_ids": ",".join(chunk)},
+                self.clob_url, "/book",
+                params={"token_id": token_id},
             )
             if response["status"] == "ok":
                 data = response["data"]
-                if isinstance(data, list):
-                    for book in data:
-                        asset_id = book.get("asset_id")
-                        if asset_id:
-                            merged[asset_id] = book
-                elif isinstance(data, dict):
-                    merged.update(data)
+                if isinstance(data, dict):
+                    asset_id = data.get("asset_id", token_id)
+                    merged[asset_id] = data
 
         return merged

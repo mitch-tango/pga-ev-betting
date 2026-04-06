@@ -68,6 +68,33 @@ def _get_odds_value(entry: dict, key: str = "odds"):
     return entry.get(key)
 
 
+def _extract_best_yes_level(market: dict) -> dict | None:
+    """Extract the best YES orderbook level from a ProphetX market.
+
+    ProphetX markets have ``selections`` = [[YES levels], [NO levels]].
+    Each level has: odds (American int), displayOdds, value, stake.
+    Returns the first (best) YES level dict, or None.
+    """
+    sels = market.get("selections")
+    if not isinstance(sels, list) or not sels:
+        return None
+    yes_levels = sels[0]
+    if not isinstance(yes_levels, list) or not yes_levels:
+        return None
+    return yes_levels[0]
+
+
+def _extract_best_no_level(market: dict) -> dict | None:
+    """Extract the best NO orderbook level from a ProphetX market."""
+    sels = market.get("selections")
+    if not isinstance(sels, list) or len(sels) < 2:
+        return None
+    no_levels = sels[1]
+    if not isinstance(no_levels, list) or not no_levels:
+        return None
+    return no_levels[0]
+
+
 def _american_to_prob(odds_val) -> float | None:
     """Convert an American odds value (int or string) to implied probability."""
     if isinstance(odds_val, int):
@@ -123,86 +150,63 @@ def pull_prophetx_outrights(
             if not type_markets:
                 continue
 
-            odds_format = _detect_odds_format(type_markets)
             players = []
 
             for market in type_markets:
-                competitors = market.get("competitors",
-                              market.get("participants",
-                              market.get("selections", [])))
-                if not isinstance(competitors, list):
-                    competitors = [market]
+                name = extract_player_name_outright(market)
+                if not name:
+                    continue
 
-                for comp in competitors:
-                    name = extract_player_name_outright(
-                        {"competitors": [comp]} if comp is not market else market,
-                    )
-                    if not name:
+                # Quality filter: totalStake as proxy for open interest
+                total_stake = market.get("totalStake", 0)
+                if isinstance(total_stake, (int, float)) and total_stake < config.PROPHETX_MIN_OPEN_INTEREST:
+                    continue
+
+                # Extract best YES level from orderbook
+                best_yes = _extract_best_yes_level(market)
+                if not best_yes:
+                    continue
+
+                odds_val = best_yes.get("odds")
+                if odds_val is None:
+                    continue
+
+                odds_format = _classify_odds_value(odds_val)
+
+                # Resolve canonical name
+                resolved = resolve_prophetx_player(name)
+                canonical = resolved["canonical_name"] if resolved else name
+
+                if odds_format == "american":
+                    american_str = _american_to_string(odds_val)
+                    prob = _american_to_prob(odds_val)
+                    if prob is None or prob <= 0 or prob >= 1:
+                        continue
+                    players.append({
+                        "player_name": canonical,
+                        "prophetx_american": american_str,
+                        "prophetx_mid_prob": prob,
+                        "odds_format": "american",
+                    })
+                else:
+                    # Binary format
+                    try:
+                        midpoint = float(odds_val)
+                    except (ValueError, TypeError):
                         continue
 
-                    odds_val = _get_odds_value(comp)
-                    if odds_val is None:
+                    if midpoint <= 0 or midpoint >= 1:
                         continue
 
-                    # Quality filters — skip filter if field absent
-                    oi = comp.get("open_interest")
-                    if oi is not None and isinstance(oi, (int, float)) and oi < config.PROPHETX_MIN_OPEN_INTEREST:
+                    american_str = binary_price_to_american(str(midpoint))
+                    if not american_str:
                         continue
 
-                    bid = comp.get("bid")
-                    ask = comp.get("ask")
-                    if (bid is not None and ask is not None
-                            and isinstance(bid, (int, float)) and isinstance(ask, (int, float))):
-                        spread = abs(ask - bid)
-                        if spread > config.PROPHETX_MAX_SPREAD:
-                            continue
-
-                    # Resolve canonical name
-                    resolved = resolve_prophetx_player(name)
-                    canonical = resolved["canonical_name"] if resolved else name
-
-                    if odds_format == "american":
-                        american_str = _american_to_string(odds_val)
-                        prob = _american_to_prob(odds_val)
-                        if prob is None or prob <= 0 or prob >= 1:
-                            continue
-                        players.append({
-                            "player_name": canonical,
-                            "prophetx_american": american_str,
-                            "prophetx_mid_prob": prob,
-                            "odds_format": "american",
-                        })
-                    else:
-                        # Binary format — use binary_midpoint for validation
-                        bid_s = str(bid) if bid is not None else None
-                        ask_s = str(ask) if ask is not None else None
-
-                        midpoint = binary_midpoint(bid_s, ask_s) if bid_s and ask_s else None
-                        if midpoint is None:
-                            # Fall back to odds value as midpoint estimate
-                            try:
-                                midpoint = float(odds_val)
-                            except (ValueError, TypeError):
-                                midpoint = None
-
-                        ask_f = float(ask) if ask is not None else None
-
-                        if midpoint is None or midpoint <= 0 or midpoint >= 1:
-                            continue
-
-                        american_str = binary_price_to_american(str(midpoint))
-                        if not american_str:
-                            continue
-
-                        player_dict = {
-                            "player_name": canonical,
-                            "prophetx_mid_prob": midpoint,
-                            "odds_format": "binary",
-                        }
-                        if ask_f is not None and 0 < ask_f < 1:
-                            player_dict["prophetx_ask_prob"] = ask_f
-
-                        players.append(player_dict)
+                    players.append({
+                        "player_name": canonical,
+                        "prophetx_mid_prob": midpoint,
+                        "odds_format": "binary",
+                    })
 
             if players:
                 results[market_type] = players
