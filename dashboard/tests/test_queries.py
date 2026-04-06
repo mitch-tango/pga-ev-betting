@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import lib.queries  # noqa: F401 — force submodule into sys.modules for @patch resolution
+
 
 def _make_mock_client():
     """Create a mock Supabase client with chainable query methods."""

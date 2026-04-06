@@ -4,6 +4,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 from datetime import date
 
+import lib.queries  # noqa: F401 — force submodule into sys.modules for @patch resolution
+
 from lib.aggregations import (
     compute_exposure,
     compute_weekly_pnl,
