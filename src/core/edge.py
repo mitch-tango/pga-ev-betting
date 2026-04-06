@@ -27,7 +27,10 @@ from src.core.devig import (
     devig_two_way, devig_three_way,
     binary_price_to_decimal,
 )
-from src.core.blend import blend_probabilities, build_book_consensus
+from src.core.blend import (
+    blend_probabilities, build_book_consensus, classify_tranche,
+    get_blend_weights,
+)
 from src.core.kelly import kelly_stake, get_correlation_haircut
 from src.core.settlement import adjust_edge_for_deadheat
 import config
@@ -72,6 +75,9 @@ class CandidateBet:
     # All book odds
     all_book_odds: dict | None = None
 
+    # Tranche classification (from DG win probability)
+    tranche: str | None = None  # 'favorite', 'mid', 'longshot'
+
     # Course-fit (Betsperts)
     coursefit_signal: str | None = None
     coursefit_sg_tot: float | None = None
@@ -106,6 +112,8 @@ class CandidateBet:
             "all_book_odds": self.all_book_odds,
             "status": "pending",
         }
+        if self.tranche:
+            d["tranche"] = self.tranche
         if self.player_id:
             d["player_id"] = self.player_id
         if self.opponent_name:
@@ -141,6 +149,7 @@ def calculate_placement_edges(
     bankroll: float = 1000.0,
     existing_bets: list[dict] | None = None,
     exchange_only: bool = False,
+    win_outrights_data: list[dict] | dict | None = None,
 ) -> list[CandidateBet]:
     """Calculate +EV placement edges from outright odds data.
 
@@ -155,6 +164,8 @@ def calculate_placement_edges(
             for best-book selection. Sportsbook odds still contribute to
             book consensus but cannot be the bettable line. Use during live
             periods when sportsbook outright boards are stale.
+        win_outrights_data: Win market outrights (for tranche classification).
+            When provided, T10/T20 use tranche-specific blend weights.
 
     Returns:
         List of CandidateBet sorted by edge descending
@@ -167,6 +178,13 @@ def calculate_placement_edges(
     # Each record has DG odds and book odds columns
     if not isinstance(outrights_data, list):
         return []
+
+    # Build player win-prob lookup for tranche classification (T10/T20)
+    # For win market itself, win_outrights_data is the same as outrights_data
+    if market_type == "win":
+        player_win_probs = _build_player_win_prob_lookup(outrights_data)
+    else:
+        player_win_probs = _build_player_win_prob_lookup(win_outrights_data)
 
     # Step 1: Identify book columns in the data
     # Live API format: each player has book names as direct keys
@@ -236,11 +254,18 @@ def calculate_placement_edges(
 
         book_consensus = build_book_consensus(player_book_probs, market_type)
 
+        # Classify tranche for this player
+        player_tranche = None
+        player_win_prob = player_win_probs.get(dg_id, 0)
+        if player_win_prob > 0:
+            player_tranche = classify_tranche(player_win_prob)
+
         # Blended probability
         your_prob = blend_probabilities(
             dg_prob, book_consensus, market_type,
             is_signature=is_signature,
             player_field_rank=int(field_rank) if field_rank else None,
+            tranche=player_tranche,
         )
         if your_prob is None or your_prob <= 0:
             continue
@@ -336,11 +361,42 @@ def calculate_placement_edges(
             correlation_haircut=haircut,
             suggested_stake=stake,
             all_book_odds=all_odds if all_odds else None,
+            tranche=player_tranche,
         ))
 
     # Sort by edge descending
     candidates.sort(key=lambda c: c.edge, reverse=True)
     return candidates
+
+
+def _build_player_win_prob_lookup(outrights_data: list[dict] | dict | None) -> dict[str, float]:
+    """Build a dg_id -> DG win probability lookup from outrights data.
+
+    Used to classify matchup tranches based on player strength.
+    """
+    if not outrights_data:
+        return {}
+    # Handle dict wrapper (some endpoints return {"odds": [...]})
+    if isinstance(outrights_data, dict):
+        outrights_data = outrights_data.get("odds", [])
+    if not isinstance(outrights_data, list):
+        return {}
+
+    lookup = {}
+    for player in outrights_data:
+        dg_id = str(player.get("dg_id", ""))
+        if not dg_id:
+            continue
+        dg_data = player.get("datagolf", {})
+        if isinstance(dg_data, dict):
+            odds_str = str(dg_data.get("baseline_history_fit") or
+                           dg_data.get("baseline") or "")
+        else:
+            odds_str = str(dg_data or "")
+        prob = parse_american_odds(odds_str)
+        if prob and prob > 0:
+            lookup[dg_id] = prob
+    return lookup
 
 
 def calculate_matchup_edges(
@@ -349,6 +405,7 @@ def calculate_matchup_edges(
     bankroll: float = 1000.0,
     existing_bets: list[dict] | None = None,
     market_type: str = "tournament_matchup",
+    outrights_data: list[dict] | dict | None = None,
 ) -> list[CandidateBet]:
     """Calculate +EV edges from matchup odds data.
 
@@ -359,6 +416,8 @@ def calculate_matchup_edges(
         bankroll: current bankroll
         existing_bets: for correlation haircut
         market_type: "tournament_matchup" or "round_matchup"
+        outrights_data: Outrights response (for tranche classification).
+            When provided, matchups use tranche-specific blend weights.
 
     Returns:
         List of CandidateBet sorted by edge descending
@@ -367,8 +426,8 @@ def calculate_matchup_edges(
     min_edge = config.MIN_EDGE.get(market_type, 0.05)
     candidates = []
 
-    # Get blend weights for matchups
-    blend_weights = config.BLEND_WEIGHTS.get("matchup", {"dg": 1.0, "books": 0.0})
+    # Build player win-prob lookup for tranche classification
+    player_win_probs = _build_player_win_prob_lookup(outrights_data)
 
     for matchup in matchups_data:
         odds_dict = matchup.get("odds", {})
@@ -429,7 +488,13 @@ def calculate_matchup_edges(
             continue
         book_consensus_p1 = sum(book_p1_probs.values()) / len(book_p1_probs)
 
-        # Blend
+        # Classify tranche by the higher-ranked player's DG win probability
+        p1_win = player_win_probs.get(p1_dg_id, 0)
+        p2_win = player_win_probs.get(p2_dg_id, 0)
+        tranche = classify_tranche(max(p1_win, p2_win)) if player_win_probs else None
+
+        # Blend with tranche-specific weights
+        blend_weights = get_blend_weights(market_type, tranche=tranche)
         your_p1 = blend_weights["dg"] * dg_p1 + blend_weights["books"] * book_consensus_p1
         your_p2 = 1 - your_p1
 
@@ -491,6 +556,7 @@ def calculate_matchup_edges(
                 correlation_haircut=haircut,
                 suggested_stake=stake,
                 all_book_odds=display_odds,
+                tranche=tranche,
             ))
 
     candidates.sort(key=lambda c: c.edge, reverse=True)

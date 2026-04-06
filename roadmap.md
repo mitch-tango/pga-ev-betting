@@ -81,13 +81,30 @@ Expert picks consensus signal is currently display-only. Same graduation path as
 
 Systematic analysis of DG/sportsbook blend weights and per-book value across all bet types, segmented by player tranche (favorites, mid-tier, longshots).
 
-**Phase 1 — Backtest re-analysis** (run now, no live data needed):
-- Build `scripts/analyze_weights.py` with tranche segmentation
-- Re-analyze 20K matchup backtest records: sweep DG/books blend weights per (market_type × tranche), measure Brier score, log-loss, and simulated ROI
-- Per-book leave-one-out: recompute consensus dropping each book to measure marginal contribution to calibration
-- Per-book line softness: how often each book is `best_book` and ROI when bet there
-- Tranche definition: favorites (DG win prob ≥ 5%), mid-tier (1–5%), longshots (< 1%)
-- Output recommended tranche-specific weights + sportsbook value ranking
+**Phase 1 — Backtest re-analysis: COMPLETE**
+- Built `scripts/analyze_weights.py` with tranche segmentation (matchups + outrights)
+- Swept DG/books blend weights per (market_type × tranche) using log-loss on 278-event OAD backtest (30K+ player-events per market) and 99-event matchup backtest (19,901 records)
+- Per-book leave-one-out: all 7 books contribute to consensus (Betcris most valuable, DraftKings least)
+- Per-book sharpness by tranche: paired comparison showed no significant accuracy differences between books for same players — apparent DK/FD "sharpness" was a field-size artifact
+- Temporal stability validated: split 2020-2022 vs 2023-2026 to ensure weights are consistent across periods. Win market tranche weights were unstable and NOT implemented.
+- Historical outright odds pulled for T10 and make-cut via `scripts/pull_oad_outrights.py`
+
+**Phase 1 results — implemented tranche-specific weights:**
+
+| Market | Favorite | Mid | Longshot | Previous |
+|--------|----------|-----|----------|----------|
+| T10/T20 | 100% DG | 55% DG | 45% DG | 55% global |
+| Matchup | 60% DG | 30% DG | 0% DG | 20% global |
+| Make Cut | 80% DG (global, raised) | | | 35% global |
+| Win | 35% DG (unchanged) | | | 35% global |
+
+Win market: tranche weights were temporally unstable (0% → 65% DG across periods). Kept global 35%.
+
+**Phase 1 — Validation items: COMPLETE** (2026-04-06)
+- Bootstrap CI on T10/T20 favorite tranche: 100% DG significantly better than 80%/70%/55% (all 95% CIs exclude zero, P>99.8%, holds under clustered bootstrap by event)
+- Make-cut deep dive: 35%→80% confirmed via 5-fold CV (80% DG wins all folds, avg train-optimal 86% DG), temporal stability (75% in 2020-22, 95% in 2023-26), not a coverage artifact. Note: advantage narrows for events with 3+ book quotes — DG dominance partly reflects thin book coverage in make-cut markets
+- Full results: `scripts/blend_weight_validation_results.md`
+- Validation script: `scripts/validate_blend_weights.py`
 
 **Phase 2 — SQL views for ongoing monitoring** (deploy now, auto-populate):
 - `v_roi_by_tranche` — performance by favorites/mid/longshots
@@ -99,11 +116,6 @@ Systematic analysis of DG/sportsbook blend weights and per-book value across all
 - Compare live tranche-specific performance against backtest predictions
 - Evaluate prediction market (Kalshi/Polymarket/ProphetX) consensus contribution (not in backtest data — requires live candidates with `all_book_odds` JSONB)
 - Produce updated weight recommendations with bootstrap confidence intervals
-
-**Open questions to resolve:**
-- Does DG's OAD historical archive provide player-level predicted probs + actual finishes? If so, extend tranche analysis beyond matchups into win/placement/make-cut
-- Should `deep_field` threshold (rank 61+) be higher or lower? Tranche analysis will inform this — the current hardcoded cutoff should be replaced by tranche-specific blend weights
-- Consider tranche-aware config structure: `"win": {"favorite": {...}, "mid": {...}, "longshot": {...}}`
 
 ### 2. Bankroll & Kelly Sizing Refinements
 

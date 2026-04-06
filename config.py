@@ -113,15 +113,45 @@ LIVE_MONITOR_END_HOUR = 19       # Stop monitoring at 7 PM ET
 # --- Blend Weights ---
 # Win/placement weights from OAD backtest (278 events, 2020-2026).
 # Matchup weights from 99-event backtest (19,996 records, 2022-2026).
+# Temporal stability validated: only tranche splits that are consistent
+# across 2020-2022 vs 2023-2026 are implemented.
 BLEND_WEIGHTS = {
-    "win":                  {"dg": 0.35, "books": 0.65},
-    "placement":            {"dg": 0.55, "books": 0.45},   # T10, T20
-    "make_cut":             {"dg": 0.35, "books": 0.65},   # Binary outcome like win
-    "matchup":              {"dg": 0.20, "books": 0.80},   # 99-event backtest: 20% DG optimal by log-loss (full-distribution derivation), ROI 2.5%
+    "win":                  {"dg": 0.35, "books": 0.65},   # Temporally unstable by tranche — keep global
+    "placement":            {"dg": 0.55, "books": 0.45},   # T10/T20 fallback (when tranche unknown)
+    "make_cut":             {"dg": 0.80, "books": 0.20},   # Raised from 0.35 — DG dominates (ALL stable: 75%→80% across periods)
+    "matchup":              {"dg": 0.20, "books": 0.80},   # Global fallback (when tranche unknown)
     "three_ball":           {"dg": 1.0,  "books": 0.0},    # No book consensus data yet
     "signature_win":        {"dg": 0.15, "books": 0.85},
     "signature_placement":  {"dg": 0.40, "books": 0.60},
     "deep_field":           {"dg": 1.0,  "books": 0.0},    # Rank 61+
+}
+
+# --- Tranche-Specific Blend Weights ---
+# Only implemented where temporally stable (consistent across 2020-2022 vs 2023-2026).
+#
+# Tranche thresholds (DG win probability):
+#   favorite: >= 5%  |  mid: 1-5%  |  longshot: < 1%
+TRANCHE_THRESHOLDS = {
+    "favorite": 0.05,
+    "mid":      0.01,
+}
+
+# Placement (T10/T20): DG dominates, especially for favorites.
+# Favorites at 100% DG: stable across both periods (100%→100%).
+# Mid at 55%: drifting toward DG but unstable — keep current.
+# Longshots at 45%: stable (T10: 55%→45%, T20: 60%→50%).
+PLACEMENT_TRANCHE_WEIGHTS = {
+    "favorite": {"dg": 1.00, "books": 0.00},  # Stable: 100% both periods
+    "mid":      {"dg": 0.55, "books": 0.45},  # Keep current — drift unstable
+    "longshot": {"dg": 0.45, "books": 0.55},  # Stable: ~45-50% both periods
+}
+
+# Matchups: from 99-event backtest (19,901 records, 2022-2026).
+# Tranche = higher-ranked player's DG win probability.
+MATCHUP_TRANCHE_WEIGHTS = {
+    "favorite": {"dg": 0.60, "books": 0.40},  # N=1,452; DG far more informative for top players
+    "mid":      {"dg": 0.30, "books": 0.70},  # N=10,988; slight DG edge
+    "longshot": {"dg": 0.00, "books": 1.00},  # N=7,461; DG adds noise
 }
 
 # --- Book Weights (for building book consensus) ---

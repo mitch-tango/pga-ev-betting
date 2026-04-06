@@ -7,10 +7,10 @@ Combines DataGolf model probabilities with sportsbook consensus to produce
 the "your probability" estimate used for edge calculation.
 
 Blend weights are calibrated from OAD backtest (278 events, 2020-2026):
-- Win market: 35% DG / 65% books (books edge DG 52-61%)
-- Placement (T5/T10/T20): 55% DG / 45% books (DG beats books 65-70%)
-- Make-cut: 35% DG / 65% books (binary outcome, similar to win)
-- Matchup/3-ball: 100% DG (provisional — backtest will determine optimal)
+- Win market: 35% DG / 65% books (temporally unstable by tranche — keep global)
+- Placement (T10/T20): tranche-specific (fav 100/0, mid 55/45, LS 45/55)
+- Make-cut: 80% DG / 20% books (DG dominates; stable across periods)
+- Matchup: tranche-specific (favorites 60/40, mid 30/70, longshots 0/100)
 - Signature events ($20M+): shift toward books (higher volume = sharper lines)
 - Deep field (rank 61+): 100% DG (books don't price longshots accurately)
 """
@@ -19,8 +19,25 @@ from src.core.devig import power_devig, devig_two_way, devig_three_way
 import config
 
 
+def classify_tranche(win_prob: float) -> str:
+    """Classify a player's tranche based on DG win probability.
+
+    Args:
+        win_prob: DG model win probability (0-1 scale)
+
+    Returns:
+        'favorite', 'mid', or 'longshot'
+    """
+    if win_prob >= config.TRANCHE_THRESHOLDS["favorite"]:
+        return "favorite"
+    elif win_prob >= config.TRANCHE_THRESHOLDS["mid"]:
+        return "mid"
+    return "longshot"
+
+
 def get_blend_weights(market_type: str, is_signature: bool = False,
-                      player_field_rank: int | None = None) -> dict:
+                      player_field_rank: int | None = None,
+                      tranche: str | None = None) -> dict:
     """Return the appropriate DG/books blend weights for this context.
 
     Args:
@@ -28,6 +45,8 @@ def get_blend_weights(market_type: str, is_signature: bool = False,
                      'tournament_matchup', 'round_matchup', '3_ball'
         is_signature: True for $20M+ purse events
         player_field_rank: Player's rank in the field (for deep-field override)
+        tranche: 'favorite', 'mid', or 'longshot' — used for placement
+                 and matchup markets to select tranche-specific blend weights
 
     Returns:
         {"dg": float, "books": float} summing to 1.0
@@ -47,10 +66,14 @@ def get_blend_weights(market_type: str, is_signature: bool = False,
     if market_type == "win":
         return config.BLEND_WEIGHTS["win"]
     elif market_type in ("t5", "t10", "t20"):
+        if tranche and tranche in config.PLACEMENT_TRANCHE_WEIGHTS:
+            return config.PLACEMENT_TRANCHE_WEIGHTS[tranche]
         return config.BLEND_WEIGHTS["placement"]
     elif market_type == "make_cut":
         return config.BLEND_WEIGHTS["make_cut"]
     elif market_type in ("tournament_matchup", "round_matchup"):
+        if tranche and tranche in config.MATCHUP_TRANCHE_WEIGHTS:
+            return config.MATCHUP_TRANCHE_WEIGHTS[tranche]
         return config.BLEND_WEIGHTS["matchup"]
     elif market_type == "3_ball":
         return config.BLEND_WEIGHTS["three_ball"]
@@ -63,7 +86,8 @@ def blend_probabilities(dg_prob: float | None,
                         book_consensus_prob: float | None,
                         market_type: str,
                         is_signature: bool = False,
-                        player_field_rank: int | None = None) -> float | None:
+                        player_field_rank: int | None = None,
+                        tranche: str | None = None) -> float | None:
     """Blend DG and book consensus probabilities using calibrated weights.
 
     Args:
@@ -72,6 +96,7 @@ def blend_probabilities(dg_prob: float | None,
         market_type: Market type string
         is_signature: True for $20M+ events
         player_field_rank: For deep-field override (rank 61+ -> 100% DG)
+        tranche: 'favorite', 'mid', or 'longshot' for matchup markets
 
     Returns:
         Blended probability, or None if both inputs are None
@@ -79,7 +104,8 @@ def blend_probabilities(dg_prob: float | None,
     if dg_prob is None and book_consensus_prob is None:
         return None
 
-    weights = get_blend_weights(market_type, is_signature, player_field_rank)
+    weights = get_blend_weights(market_type, is_signature, player_field_rank,
+                                tranche=tranche)
 
     if dg_prob is not None and book_consensus_prob is not None:
         return weights["dg"] * dg_prob + weights["books"] * book_consensus_prob

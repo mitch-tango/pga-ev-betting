@@ -9,6 +9,7 @@ from src.core.blend import (
     blend_probabilities,
     build_book_consensus,
     build_book_consensus_for_field,
+    classify_tranche,
 )
 import config
 
@@ -80,6 +81,80 @@ class TestGetBlendWeights:
         w = get_blend_weights("win", is_signature=True, player_field_rank=70)
         assert w == config.BLEND_WEIGHTS["deep_field"]
 
+    def test_matchup_favorite_tranche(self):
+        w = get_blend_weights("tournament_matchup", tranche="favorite")
+        assert w == config.MATCHUP_TRANCHE_WEIGHTS["favorite"]
+        assert w["dg"] == 0.60
+
+    def test_matchup_mid_tranche(self):
+        w = get_blend_weights("tournament_matchup", tranche="mid")
+        assert w == config.MATCHUP_TRANCHE_WEIGHTS["mid"]
+        assert w["dg"] == 0.30
+
+    def test_matchup_longshot_tranche(self):
+        w = get_blend_weights("round_matchup", tranche="longshot")
+        assert w == config.MATCHUP_TRANCHE_WEIGHTS["longshot"]
+        assert w["dg"] == 0.00
+
+    def test_matchup_no_tranche_uses_global(self):
+        w = get_blend_weights("tournament_matchup")
+        assert w == config.BLEND_WEIGHTS["matchup"]
+
+    def test_tranche_ignored_for_win(self):
+        """Tranche should not affect win market (temporally unstable)."""
+        w = get_blend_weights("win", tranche="favorite")
+        assert w == config.BLEND_WEIGHTS["win"]
+
+    def test_placement_favorite_tranche(self):
+        w = get_blend_weights("t10", tranche="favorite")
+        assert w == config.PLACEMENT_TRANCHE_WEIGHTS["favorite"]
+        assert w["dg"] == 1.00
+
+    def test_placement_mid_tranche(self):
+        w = get_blend_weights("t20", tranche="mid")
+        assert w == config.PLACEMENT_TRANCHE_WEIGHTS["mid"]
+        assert w["dg"] == 0.55
+
+    def test_placement_longshot_tranche(self):
+        w = get_blend_weights("t10", tranche="longshot")
+        assert w == config.PLACEMENT_TRANCHE_WEIGHTS["longshot"]
+        assert w["dg"] == 0.45
+
+    def test_placement_no_tranche_uses_global(self):
+        w = get_blend_weights("t20")
+        assert w == config.BLEND_WEIGHTS["placement"]
+
+    def test_make_cut_ignores_tranche(self):
+        """Make-cut uses global 80% DG (no tranche split — unstable)."""
+        w = get_blend_weights("make_cut", tranche="favorite")
+        assert w == config.BLEND_WEIGHTS["make_cut"]
+        assert w["dg"] == 0.80
+
+    def test_signature_overrides_tranche(self):
+        """Signature event override should take priority over tranche."""
+        w = get_blend_weights("t10", is_signature=True, tranche="longshot")
+        assert w == config.BLEND_WEIGHTS["signature_placement"]
+
+
+class TestClassifyTranche:
+    def test_favorite(self):
+        assert classify_tranche(0.08) == "favorite"
+
+    def test_favorite_at_threshold(self):
+        assert classify_tranche(0.05) == "favorite"
+
+    def test_mid(self):
+        assert classify_tranche(0.03) == "mid"
+
+    def test_mid_at_threshold(self):
+        assert classify_tranche(0.01) == "mid"
+
+    def test_longshot(self):
+        assert classify_tranche(0.005) == "longshot"
+
+    def test_longshot_very_low(self):
+        assert classify_tranche(0.001) == "longshot"
+
 
 class TestBlendProbabilities:
     def test_both_inputs(self):
@@ -100,12 +175,50 @@ class TestBlendProbabilities:
         result = blend_probabilities(None, None, "win")
         assert result is None
 
-    def test_matchup_blend(self):
-        """Matchup blend should now be 10% DG / 90% books."""
+    def test_matchup_blend_no_tranche(self):
+        """Matchup without tranche uses global 20/80 fallback."""
         result = blend_probabilities(0.60, 0.50, "tournament_matchup")
         w = config.BLEND_WEIGHTS["matchup"]
         expected = w["dg"] * 0.60 + w["books"] * 0.50
         assert abs(result - expected) < 1e-9
+
+    def test_matchup_blend_favorite_tranche(self):
+        """Favorite tranche uses 60% DG / 40% books."""
+        result = blend_probabilities(0.60, 0.50, "tournament_matchup",
+                                     tranche="favorite")
+        w = config.MATCHUP_TRANCHE_WEIGHTS["favorite"]
+        expected = w["dg"] * 0.60 + w["books"] * 0.50
+        assert abs(result - expected) < 1e-9
+
+    def test_matchup_blend_longshot_tranche(self):
+        """Longshot tranche uses 0% DG / 100% books."""
+        result = blend_probabilities(0.60, 0.50, "tournament_matchup",
+                                     tranche="longshot")
+        w = config.MATCHUP_TRANCHE_WEIGHTS["longshot"]
+        expected = w["dg"] * 0.60 + w["books"] * 0.50
+        assert abs(result - expected) < 1e-9
+        # Longshot = 100% books, so result should equal book prob
+        assert abs(result - 0.50) < 1e-9
+
+    def test_placement_favorite_uses_100pct_dg(self):
+        """T10 favorite tranche = 100% DG."""
+        result = blend_probabilities(0.40, 0.30, "t10", tranche="favorite")
+        assert abs(result - 0.40) < 1e-9  # 100% DG = DG prob
+
+    def test_placement_longshot_blend(self):
+        """T20 longshot tranche = 45% DG / 55% books."""
+        result = blend_probabilities(0.10, 0.08, "t20", tranche="longshot")
+        w = config.PLACEMENT_TRANCHE_WEIGHTS["longshot"]
+        expected = w["dg"] * 0.10 + w["books"] * 0.08
+        assert abs(result - expected) < 1e-9
+
+    def test_make_cut_blend(self):
+        """Make-cut uses 80% DG global weight."""
+        result = blend_probabilities(0.70, 0.60, "make_cut")
+        w = config.BLEND_WEIGHTS["make_cut"]
+        expected = w["dg"] * 0.70 + w["books"] * 0.60
+        assert abs(result - expected) < 1e-9
+        assert w["dg"] == 0.80
 
     def test_deep_field_ignores_books(self):
         result = blend_probabilities(0.10, 0.08, "win", player_field_rank=70)

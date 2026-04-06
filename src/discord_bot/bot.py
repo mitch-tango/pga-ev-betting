@@ -1172,6 +1172,7 @@ def _run_pretournament_scan(tour: str):
                  "opponent_2_name": c.opponent_2_name}
                 for c in all_candidates
             ],
+            win_outrights_data=outrights.get("win"),
         )
         all_candidates.extend(edges)
 
@@ -1185,6 +1186,7 @@ def _run_pretournament_scan(tour: str):
                  "opponent_2_name": c.opponent_2_name}
                 for c in all_candidates
             ],
+            outrights_data=outrights.get("win"),
         )
         all_candidates.extend(edges)
 

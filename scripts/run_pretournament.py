@@ -457,12 +457,13 @@ def main():
                  "opponent_2_name": c.opponent_2_name}
                 for c in all_candidates
             ],
+            win_outrights_data=outrights.get("win"),
         )
         if edges:
             print(f"  {our_market}: {len(edges)} candidates")
             all_candidates.extend(edges)
 
-    # Matchup edges
+    # Matchup edges (pass win outrights for tranche-specific blend weights)
     if matchups:
         edges = calculate_matchup_edges(
             matchups,
@@ -473,6 +474,7 @@ def main():
                  "opponent_2_name": c.opponent_2_name}
                 for c in all_candidates
             ],
+            outrights_data=outrights.get("win"),
         )
         if edges:
             print(f"  matchups: {len(edges)} candidates")
