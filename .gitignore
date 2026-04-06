@@ -23,6 +23,9 @@ data/raw/
 *.swo
 .DS_Store
 
+# Dashboard
+dashboard/.streamlit/secrets.toml
+
 # Testing
 .pytest_cache/
 htmlcov/
