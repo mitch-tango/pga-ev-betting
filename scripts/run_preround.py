@@ -28,6 +28,7 @@ from src.pipeline.pull_prophetx import (
 from src.parsers.start_matchups import parse_start_matchups_from_file
 from src.parsers.start_merger import merge_start_into_matchups
 from src.core.edge import calculate_matchup_edges, calculate_3ball_edges
+from src.core.arb import detect_matchup_arbs, detect_3ball_arbs, format_arb_table
 from src.core.devig import american_to_decimal, decimal_to_american
 from src.normalize.players import resolve_candidates
 from src.db import supabase_client as db
@@ -335,6 +336,22 @@ def main():
         b.get("stake", 0) for b in existing_bets
         if b.get("tournament_id") == tournament_id
     ) if tournament_id else 0
+
+    # ---- Arbitrage scan ----
+    print("\nScanning for cross-book arbitrage...")
+    arbs = []
+    if round_matchups:
+        arbs.extend(detect_matchup_arbs(
+            round_matchups, market_type="round_matchup",
+            round_number=args.round))
+    if three_balls:
+        arbs.extend(detect_3ball_arbs(three_balls, round_number=args.round))
+    if arbs:
+        arbs.sort(key=lambda a: a.margin, reverse=True)
+        print(f"\n  {len(arbs)} arbitrage opportunit{'y' if len(arbs) == 1 else 'ies'} found:\n")
+        print(format_arb_table(arbs))
+    else:
+        print("  No arbs found.")
 
     display_candidates(all_candidates, bankroll, weekly_exposure, tournament_exposure)
 

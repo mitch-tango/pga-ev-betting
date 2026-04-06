@@ -52,6 +52,9 @@ from src.pipeline.pull_prophetx import (
 from src.pipeline.pull_live import pull_live_predictions
 from src.pipeline.pull_live_edges import pull_live_edges
 from src.pipeline.pull_results import fetch_results, match_bets_to_results
+from src.core.arb import (
+    detect_matchup_arbs, detect_3ball_arbs, format_arb_table, size_arb,
+)
 from src.core.settlement import settle_placement_bet
 import config
 
@@ -163,17 +166,22 @@ class EVBot(discord.Client):
             await channel.send(embed=embed)
             return
 
-        candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
+        # Unpack — arbs added in later versions, default to empty
+        if len(result) == 7:
+            candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp, arbs = result
+        else:
+            candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
+            arbs = []
 
         # Cache for /place
         self.last_scan = candidates
         self.last_scan_tournament_id = tournament_id
         self.last_scan_time = datetime.now()
 
-        if not candidates:
+        if not candidates and not arbs:
             embed = discord.Embed(
                 title=f"Scheduled Scan — {tournament_name}",
-                description="No +EV candidates found above threshold.",
+                description="No +EV candidates or arbs found.",
                 color=0x95A5A6,
                 timestamp=datetime.now(),
             )
@@ -231,6 +239,32 @@ class EVBot(discord.Client):
             embed.add_field(
                 name="Candidates" if len(embed.fields) == 0 else "\u200b",
                 value=f"```\n" + "\n".join(lines) + "\n```",
+                inline=False,
+            )
+
+        # Arbitrage section
+        if arbs:
+            arb_lines = [f"{len(arbs)} cross-book arb(s):"]
+            for j, arb in enumerate(arbs, 1):
+                size_arb(arb, config.ARB_DEFAULT_RETURN)
+                total_outlay = sum(leg.stake for leg in arb.legs)
+                profit = config.ARB_DEFAULT_RETURN - total_outlay
+                legs_str = " + ".join(
+                    f"{leg.player.split(',')[0][:10]}@{leg.book[:6]}"
+                    f"({leg.odds_decimal:.2f})${leg.stake:.0f}"
+                    for leg in arb.legs
+                )
+                warn = " *" if arb.settlement_warning else ""
+                arb_lines.append(
+                    f"{j}. {legs_str} = {arb.margin*100:.1f}% "
+                    f"${profit:.2f}{warn}"
+                )
+            arb_text = "\n".join(arb_lines)
+            if len(arb_text) > 1000:
+                arb_text = arb_text[:997] + "..."
+            embed.add_field(
+                name="Arbitrage",
+                value=f"```\n{arb_text}\n```",
                 inline=False,
             )
 
@@ -873,17 +907,22 @@ async def cmd_scan(
         )
         return
 
-    candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
+    # Unpack — arbs added in later versions, default to empty
+    if len(result) == 7:
+        candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp, arbs = result
+    else:
+        candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
+        arbs = []
 
     # Cache for /place
     bot.last_scan = candidates
     bot.last_scan_tournament_id = tournament_id
     bot.last_scan_time = datetime.now()
 
-    if not candidates:
+    if not candidates and not arbs:
         embed = discord.Embed(
             title=f"Scan — {tournament_name}",
-            description="No +EV candidates found above threshold.",
+            description="No +EV candidates or arbs found.",
             color=0x95A5A6,
         )
         await interaction.followup.send(embed=embed)
@@ -892,49 +931,82 @@ async def cmd_scan(
     weekly_limit = bankroll * config.MAX_WEEKLY_EXPOSURE_PCT
     tourn_limit = bankroll * config.MAX_TOURNAMENT_EXPOSURE_PCT
 
+    desc_parts = []
+    if candidates:
+        desc_parts.append(f"**{len(candidates)}** +EV candidates")
+    if arbs:
+        desc_parts.append(f"**{len(arbs)}** arb(s)")
+    desc_parts.append(
+        f"Bankroll: ${bankroll:,.2f} | "
+        f"Weekly: ${weekly_exp:,.0f}/${weekly_limit:,.0f} | "
+        f"Tournament: ${tourn_exp:,.0f}/${tourn_limit:,.0f}"
+    )
+
     embed = discord.Embed(
         title=f"Scan — {tournament_name}",
-        description=(
-            f"**{len(candidates)}** candidates found\n"
-            f"Bankroll: ${bankroll:,.2f} | "
-            f"Weekly: ${weekly_exp:,.0f}/${weekly_limit:,.0f} | "
-            f"Tournament: ${tourn_exp:,.0f}/${tourn_limit:,.0f}"
-        ),
+        description="\n".join(desc_parts),
         color=0xE67E22,
         timestamp=datetime.now(),
     )
 
     # Format candidates table (Discord has 1024 char limit per field)
-    lines = []
-    lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
-    for i, c in enumerate(candidates, 1):
-        if c.opponent_name:
-            name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
-        else:
-            name = c.player_name[:20]
+    if candidates:
+        lines = []
+        lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
+        for i, c in enumerate(candidates, 1):
+            if c.opponent_name:
+                name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
+            else:
+                name = c.player_name[:20]
 
-        mkt = c.market_type
-        if c.round_number:
-            mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
+            mkt = c.market_type
+            if c.round_number:
+                mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
 
-        lines.append(
-            f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
-            f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
-        )
+            lines.append(
+                f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
+                f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
+            )
 
-        # Split into multiple fields if too long
-        if len("\n".join(lines)) > 900:
+            # Split into multiple fields if too long
+            if len("\n".join(lines)) > 900:
+                embed.add_field(
+                    name="Candidates" if len(embed.fields) == 0 else "\u200b",
+                    value=f"```\n" + "\n".join(lines) + "\n```",
+                    inline=False,
+                )
+                lines = []
+
+        if lines:
             embed.add_field(
                 name="Candidates" if len(embed.fields) == 0 else "\u200b",
                 value=f"```\n" + "\n".join(lines) + "\n```",
                 inline=False,
             )
-            lines = []
 
-    if lines:
+    # Arbitrage section
+    if arbs:
+        arb_lines = []
+        for j, arb in enumerate(arbs, 1):
+            size_arb(arb, config.ARB_DEFAULT_RETURN)
+            total_outlay = sum(leg.stake for leg in arb.legs)
+            profit = config.ARB_DEFAULT_RETURN - total_outlay
+            legs_str = " + ".join(
+                f"{leg.player.split(',')[0][:10]}@{leg.book[:6]}"
+                f"({leg.odds_decimal:.2f})${leg.stake:.0f}"
+                for leg in arb.legs
+            )
+            warn = " *" if arb.settlement_warning else ""
+            arb_lines.append(
+                f"{j}. {legs_str} = {arb.margin*100:.1f}% "
+                f"${profit:.2f}{warn}"
+            )
+        arb_text = "\n".join(arb_lines)
+        if len(arb_text) > 1000:
+            arb_text = arb_text[:997] + "..."
         embed.add_field(
-            name="Candidates" if len(embed.fields) == 0 else "\u200b",
-            value=f"```\n" + "\n".join(lines) + "\n```",
+            name="Arbitrage",
+            value=f"```\n{arb_text}\n```",
             inline=False,
         )
 
@@ -1088,13 +1160,16 @@ def _run_pretournament_scan(tour: str):
     if all_candidates:
         resolve_candidates(all_candidates, source="datagolf")
 
+    # Arbitrage scan on matchups
+    arbs = detect_matchup_arbs(matchups, market_type="tournament_matchup") if matchups else []
+
     tournament_exposure = sum(
         b.get("stake", 0) for b in existing_bets
         if b.get("tournament_id") == tournament_id
     )
 
     return (all_candidates, tournament_id, tournament_name,
-            bankroll, weekly_exposure, tournament_exposure)
+            bankroll, weekly_exposure, tournament_exposure, arbs)
 
 
 def _run_preround_scan(tour: str, round_number: int | None):
@@ -1159,6 +1234,16 @@ def _run_preround_scan(tour: str, round_number: int | None):
     if all_candidates:
         resolve_candidates(all_candidates, source="datagolf")
 
+    # Arbitrage scan
+    arbs = []
+    if round_matchups:
+        arbs.extend(detect_matchup_arbs(
+            round_matchups, market_type="round_matchup",
+            round_number=round_number))
+    if three_balls:
+        arbs.extend(detect_3ball_arbs(three_balls, round_number=round_number))
+    arbs.sort(key=lambda a: a.margin, reverse=True)
+
     tournament_exposure = sum(
         b.get("stake", 0) for b in existing_bets
         if b.get("tournament_id") == tournament_id
@@ -1168,7 +1253,7 @@ def _run_preround_scan(tour: str, round_number: int | None):
     display_name = f"{tournament_name}{rnd_str}"
 
     return (all_candidates, tournament_id, display_name,
-            bankroll, weekly_exposure, tournament_exposure)
+            bankroll, weekly_exposure, tournament_exposure, arbs)
 
 
 # ---------------------------------------------------------------------------

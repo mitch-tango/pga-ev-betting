@@ -168,6 +168,10 @@ NO_DEADHEAT_BOOKS = {"kalshi", "polymarket"}
 # edge detection during live periods.
 EXCHANGE_BOOKS = {"kalshi", "polymarket", "prophetx"}
 
+# --- Arbitrage ---
+ARB_MIN_MARGIN = 0.005        # 0.5% minimum margin to flag an arb
+ARB_DEFAULT_RETURN = 200      # Default guaranteed return for sizing display
+
 # --- Signature Event ---
 SIGNATURE_PURSE_THRESHOLD = 20_000_000
 
