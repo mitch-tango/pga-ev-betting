@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS candidate_bets (
     correlation_haircut REAL DEFAULT 1.0,
     suggested_stake REAL,
     all_book_odds JSONB,
+    tranche TEXT,  -- 'favorite', 'mid', 'longshot' (from DG win prob classification)
     status TEXT DEFAULT 'pending',
     skip_reason TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -210,6 +211,11 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_tournament ON odds_snapshots(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_type ON odds_snapshots(snapshot_type);
+
+-- ============================================
+-- Migration: Add tranche column (run once on existing DB)
+-- ============================================
+-- ALTER TABLE candidate_bets ADD COLUMN IF NOT EXISTS tranche TEXT;
 
 -- ============================================
 -- Analytical Views
@@ -310,3 +316,57 @@ SELECT
 FROM bets
 GROUP BY 1
 ORDER BY 1;
+
+-- ROI by tranche (favorites / mid / longshots)
+CREATE OR REPLACE VIEW v_roi_by_tranche AS
+SELECT
+    COALESCE(cb.tranche, 'unknown') AS tranche,
+    b.market_type,
+    COUNT(*) AS total_bets,
+    SUM(b.stake) AS total_staked,
+    SUM(b.pnl) AS total_pnl,
+    ROUND((SUM(b.pnl) / NULLIF(SUM(b.stake), 0) * 100)::numeric, 2) AS roi_pct,
+    ROUND((AVG(b.edge) * 100)::numeric, 2) AS avg_edge_pct,
+    ROUND((AVG(b.clv) * 100)::numeric, 2) AS avg_clv_pct,
+    COUNT(*) FILTER (WHERE b.outcome = 'win') AS wins,
+    COUNT(*) FILTER (WHERE b.outcome = 'loss') AS losses
+FROM bets b
+LEFT JOIN candidate_bets cb ON b.candidate_id = cb.id
+WHERE b.outcome IS NOT NULL
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+-- Book attribution: which books contribute the most +EV opportunities
+CREATE OR REPLACE VIEW v_book_attribution AS
+SELECT
+    b.book,
+    b.market_type,
+    COALESCE(cb.tranche, 'unknown') AS tranche,
+    COUNT(*) AS total_bets,
+    SUM(b.stake) AS total_staked,
+    SUM(b.pnl) AS total_pnl,
+    ROUND((SUM(b.pnl) / NULLIF(SUM(b.stake), 0) * 100)::numeric, 2) AS roi_pct,
+    ROUND((AVG(b.edge) * 100)::numeric, 2) AS avg_edge_pct,
+    ROUND((AVG(b.clv) * 100)::numeric, 2) AS avg_clv_pct,
+    COUNT(*) FILTER (WHERE b.outcome = 'win') AS wins,
+    COUNT(*) FILTER (WHERE b.outcome = 'loss') AS losses
+FROM bets b
+LEFT JOIN candidate_bets cb ON b.candidate_id = cb.id
+WHERE b.outcome IS NOT NULL
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3;
+
+-- CLV trend by tranche (weekly)
+CREATE OR REPLACE VIEW v_clv_by_tranche AS
+SELECT
+    DATE_TRUNC('week', b.bet_timestamp) AS week,
+    COALESCE(cb.tranche, 'unknown') AS tranche,
+    COUNT(*) AS bets,
+    ROUND((AVG(b.clv) * 100)::numeric, 2) AS avg_clv_pct,
+    ROUND(SUM(b.pnl)::numeric, 2) AS weekly_pnl,
+    ROUND((AVG(b.edge) * 100)::numeric, 2) AS avg_edge_pct
+FROM bets b
+LEFT JOIN candidate_bets cb ON b.candidate_id = cb.id
+WHERE b.clv IS NOT NULL
+GROUP BY 1, 2
+ORDER BY 1, 2;

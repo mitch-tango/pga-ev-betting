@@ -438,3 +438,21 @@ def get_weekly_exposure() -> list[dict]:
     """Query the v_weekly_exposure view."""
     result = client().table("v_weekly_exposure").select("*").execute()
     return result.data
+
+
+def get_roi_by_tranche() -> list[dict]:
+    """Query the v_roi_by_tranche view."""
+    result = client().table("v_roi_by_tranche").select("*").execute()
+    return result.data
+
+
+def get_book_attribution() -> list[dict]:
+    """Query the v_book_attribution view."""
+    result = client().table("v_book_attribution").select("*").execute()
+    return result.data
+
+
+def get_clv_by_tranche() -> list[dict]:
+    """Query the v_clv_by_tranche view."""
+    result = client().table("v_clv_by_tranche").select("*").execute()
+    return result.data
