@@ -59,6 +59,35 @@ PROPHETX_MIN_OPEN_INTEREST = 100  # Minimum OI threshold
 PROPHETX_MAX_SPREAD = 0.05  # Max bid-ask spread
 PROPHETX_ENABLED = env_flag("PROPHETX_ENABLED", "1")  # On by default (public API, no auth needed)
 
+# --- Betsperts Golf ---
+BETSPERTS_BASE_URL = "https://api.betspertsgolf.com"
+BETSPERTS_SESSION_KEY = os.getenv("BETSPERTS_SESSION_KEY")
+BETSPERTS_RATE_LIMIT_DELAY = 1.0  # Conservative (rate limits undocumented)
+BETSPERTS_ENABLED = env_flag("BETSPERTS_ENABLED", "1")
+
+# --- Course-Fit (Betsperts) ---
+COURSEFIT_MIN_ROUNDS = 20  # Minimum baseline-window rounds to trust signal
+# Course profiles are defined in src/core/coursefit.py (COURSE_PROFILES dict
+# in config can override/extend the built-in profiles)
+
+# --- Expert Picks ---
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+EXPERT_PICKS_ENABLED = env_flag("EXPERT_PICKS_ENABLED", "1")
+EXPERT_YOUTUBE_CHANNELS = {
+    "rick_gehman": {
+        "channel_query": "Rick Gehman golf",
+        "search_terms": ["picks", "preview", "betting", "DFS"],
+    },
+    "pat_mayo": {
+        "channel_query": "Pat Mayo golf",
+        "search_terms": ["golf picks", "fantasy golf", "masters"],
+    },
+    "betsperts": {
+        "channel_query": "Betsperts Golf",
+        "search_terms": ["picks", "preview", "betting"],
+    },
+}
+
 # --- Supabase ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")

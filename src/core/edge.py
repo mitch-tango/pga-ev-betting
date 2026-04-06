@@ -72,6 +72,17 @@ class CandidateBet:
     # All book odds
     all_book_odds: dict | None = None
 
+    # Course-fit (Betsperts)
+    coursefit_signal: str | None = None
+    coursefit_sg_tot: float | None = None
+    coursefit_sg_rank: int | None = None
+    coursefit_rounds: int | None = None
+
+    # Expert picks
+    expert_signal: str | None = None
+    expert_score: float | None = None
+    expert_pick_count: int | None = None
+
     def to_db_dict(self, tournament_id: str, scan_type: str) -> dict:
         """Convert to dict suitable for Supabase insertion."""
         d = {
@@ -107,6 +118,19 @@ class CandidateBet:
             d["opponent_2_id"] = self.opponent_2_id
         if self.round_number is not None:
             d["round_number"] = self.round_number
+        if self.coursefit_signal:
+            d["coursefit_signal"] = self.coursefit_signal
+            d["coursefit_sg_data"] = {
+                "sg_tot": self.coursefit_sg_tot,
+                "rank": self.coursefit_sg_rank,
+                "rounds": self.coursefit_rounds,
+            }
+        if self.expert_signal:
+            d["expert_signal"] = self.expert_signal
+            d["expert_data"] = {
+                "score": self.expert_score,
+                "pick_count": self.expert_pick_count,
+            }
         return d
 
 

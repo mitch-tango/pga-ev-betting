@@ -1963,6 +1963,336 @@ def _auto_settle_3ball(bet, pr, o1r, o2r):
 
 
 # ---------------------------------------------------------------------------
+# /coursefit
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="coursefit",
+                  description="Show a player's course-fit SG breakdown")
+@app_commands.describe(
+    player="Player name (e.g., Scheffler)",
+    tournament="Tournament name override (default: current event)",
+)
+async def cmd_coursefit(
+    interaction: discord.Interaction,
+    player: str,
+    tournament: Optional[str] = None,
+):
+    await interaction.response.defer()
+
+    try:
+        result = await asyncio.to_thread(
+            _run_coursefit_lookup, player, tournament
+        )
+    except Exception as e:
+        await interaction.followup.send(f"Course-fit lookup failed: {e}")
+        return
+
+    if isinstance(result, str):
+        await interaction.followup.send(result)
+        return
+
+    embed = discord.Embed(
+        title=f"Course-Fit: {result['player_name']}",
+        description=result.get("conditions_desc", ""),
+        color=0x2ECC71,
+    )
+
+    # Form window (ball-striking)
+    form_parts = []
+    for label, key in [("OTT", "sg_ott"), ("APP", "sg_app"), ("T2G", "sg_t2g")]:
+        val = result.get(key)
+        if val is not None:
+            sign = "+" if val >= 0 else ""
+            form_parts.append(f"SG:{label} {sign}{val:.2f}")
+    form_rds = result.get("form_rounds", "?")
+    embed.add_field(name=f"Form ({form_rds}r)",
+                    value=" | ".join(form_parts) or "N/A", inline=False)
+
+    # Baseline window (short game)
+    base_parts = []
+    for label, key in [("ARG", "sg_arg"), ("P", "sg_p")]:
+        val = result.get(key)
+        if val is not None:
+            sign = "+" if val >= 0 else ""
+            base_parts.append(f"SG:{label} {sign}{val:.2f}")
+    base_rds = result.get("baseline_rounds", "?")
+    embed.add_field(name=f"Baseline ({base_rds}r)",
+                    value=" | ".join(base_parts) or "N/A", inline=False)
+
+    comp = result.get("sg_composite")
+    rank = result.get("sg_rank", "?")
+    field = result.get("field_size", "?")
+    if comp is not None:
+        sign = "+" if comp >= 0 else ""
+        embed.add_field(name="Weighted Composite",
+                        value=f"{sign}{comp:.2f}", inline=True)
+    embed.add_field(name="Field Rank", value=f"{rank}/{field}", inline=True)
+
+    await interaction.followup.send(embed=embed)
+
+
+def _run_coursefit_lookup(player_name: str, tournament_override: str | None):
+    """Blocking coursefit lookup."""
+    from src.core.coursefit import (
+        pull_coursefit_data, match_betsperts_to_dg, _PROFILES, _normalize,
+    )
+
+    tournament = tournament_override
+    if not tournament:
+        outrights = pull_all_outrights(tour="pga")
+        tournament = outrights.get("_event_name", "")
+    if not tournament:
+        return "Could not determine current tournament."
+
+    raw = pull_coursefit_data(tournament)
+    if not raw:
+        return "No Betsperts data available for this tournament."
+
+    # Find player by fuzzy match
+    matched = match_betsperts_to_dg(list(raw.values()), [player_name])
+    if not matched:
+        target = _normalize(player_name)
+        for bp_name, bp_data in raw.items():
+            if target in _normalize(bp_name):
+                matched = {player_name: bp_data}
+                break
+    if not matched:
+        return f"Player '{player_name}' not found in field."
+
+    bp_data = list(matched.values())[0]
+    display_name = bp_data.get("playerName", player_name)
+
+    # Compute rank by composite
+    all_comp = sorted(
+        [(n, d["sg_composite"]) for n, d in raw.items() if d.get("sg_composite") is not None],
+        key=lambda x: x[1], reverse=True,
+    )
+    rank = next(
+        (i + 1 for i, (n, _) in enumerate(all_comp) if n == bp_data["playerName"]),
+        None,
+    )
+
+    profile = _PROFILES.get(tournament, {})
+    if profile:
+        difficulties = [f"OTT:{profile.get('sg_ott','?')}", f"APP:{profile.get('sg_app','?')}",
+                        f"ARG:{profile.get('sg_arg','?')}", f"P:{profile.get('sg_p','?')}"]
+        cond_desc = f"{tournament}\nWeights: {', '.join(difficulties)}"
+    else:
+        cond_desc = f"{tournament} — default weights"
+
+    return {
+        "player_name": display_name,
+        "conditions_desc": cond_desc,
+        "sg_ott": bp_data.get("sg_ott"),
+        "sg_app": bp_data.get("sg_app"),
+        "sg_arg": bp_data.get("sg_arg"),
+        "sg_p": bp_data.get("sg_p"),
+        "sg_t2g": bp_data.get("sg_t2g"),
+        "form_rounds": bp_data.get("form_rounds"),
+        "baseline_rounds": bp_data.get("baseline_rounds"),
+        "sg_composite": bp_data.get("sg_composite"),
+        "sg_rank": rank,
+        "field_size": len(all_comp),
+    }
+
+
+# ---------------------------------------------------------------------------
+# /fieldsg
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="fieldsg",
+                  description="Top/bottom 10 by condition-filtered SG:TOT")
+@app_commands.describe(
+    tournament="Tournament name override (default: current event)",
+)
+async def cmd_fieldsg(
+    interaction: discord.Interaction,
+    tournament: Optional[str] = None,
+):
+    await interaction.response.defer()
+
+    try:
+        result = await asyncio.to_thread(_run_fieldsg, tournament)
+    except Exception as e:
+        await interaction.followup.send(f"Field SG lookup failed: {e}")
+        return
+
+    if isinstance(result, str):
+        await interaction.followup.send(result)
+        return
+
+    embed = discord.Embed(
+        title=f"Field SG:TOT — {result['tournament']}",
+        description=result.get("conditions_desc", ""),
+        color=0x3498DB,
+    )
+
+    embed.add_field(name="Top 10", value=f"```\n{result['top']}\n```", inline=False)
+    embed.add_field(name="Bottom 10", value=f"```\n{result['bottom']}\n```", inline=False)
+
+    await interaction.followup.send(embed=embed)
+
+
+def _run_fieldsg(tournament_override: str | None):
+    """Blocking field SG lookup."""
+    from src.core.coursefit import pull_coursefit_data, _PROFILES
+
+    tournament = tournament_override
+    if not tournament:
+        outrights = pull_all_outrights(tour="pga")
+        tournament = outrights.get("_event_name", "")
+    if not tournament:
+        return "Could not determine current tournament."
+
+    raw = pull_coursefit_data(tournament)
+    if not raw:
+        return "No Betsperts data available."
+
+    all_comp = sorted(
+        [(n, d["sg_composite"], d.get("form_rounds") or 0)
+         for n, d in raw.items() if d.get("sg_composite") is not None],
+        key=lambda x: x[1], reverse=True,
+    )
+
+    def fmt_list(items):
+        lines = []
+        for i, (name, sg, rds) in enumerate(items, 1):
+            sign = "+" if sg >= 0 else ""
+            lines.append(f"{i:>2}. {name[:20]:<20} {sign}{sg:.2f}  ({rds}r)")
+        return "\n".join(lines)
+
+    profile = _PROFILES.get(tournament, {})
+    if profile:
+        difficulties = [f"OTT:{profile.get('sg_ott','?')}", f"APP:{profile.get('sg_app','?')}",
+                        f"ARG:{profile.get('sg_arg','?')}", f"P:{profile.get('sg_p','?')}"]
+        cond_desc = f"Weighted: {', '.join(difficulties)}"
+    else:
+        cond_desc = "Default equal weights"
+
+    return {
+        "tournament": tournament,
+        "conditions_desc": cond_desc,
+        "top": fmt_list(all_comp[:10]),
+        "bottom": fmt_list(all_comp[-10:][::-1]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# /expertpicks
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="expertpicks",
+                  description="Fetch and analyze expert picks for current tournament")
+@app_commands.describe(
+    tournament="Tournament name override (default: current event)",
+)
+async def cmd_expertpicks(
+    interaction: discord.Interaction,
+    tournament: Optional[str] = None,
+):
+    await interaction.response.defer()
+
+    try:
+        result = await asyncio.to_thread(_run_expert_picks, tournament)
+    except Exception as e:
+        await interaction.followup.send(f"Expert picks failed: {e}")
+        return
+
+    if isinstance(result, str):
+        await interaction.followup.send(result)
+        return
+
+    embed = discord.Embed(
+        title=f"Expert Picks — {result['tournament']}",
+        description=result.get("sources_desc", ""),
+        color=0x9B59B6,
+    )
+
+    if result.get("bullish"):
+        embed.add_field(
+            name="Bullish",
+            value=f"```\n{result['bullish']}\n```",
+            inline=False,
+        )
+    if result.get("fades"):
+        embed.add_field(
+            name="Fades",
+            value=f"```\n{result['fades']}\n```",
+            inline=False,
+        )
+    if not result.get("bullish") and not result.get("fades"):
+        embed.add_field(name="Result", value="No explicit picks found.", inline=False)
+
+    embed.set_footer(text=f"Sources: {result.get('source_count', 0)} | "
+                          f"Picks: {result.get('pick_count', 0)}")
+
+    await interaction.followup.send(embed=embed)
+
+
+def _run_expert_picks(tournament_override: str | None):
+    """Blocking expert picks analysis."""
+    from src.api.experts import fetch_all_expert_content
+    from src.core.expert_picks import (
+        extract_all_picks, compute_expert_signals, format_expert_summary,
+        SIGNAL_LABELS,
+    )
+
+    tournament = tournament_override
+    if not tournament:
+        outrights = pull_all_outrights(tour="pga")
+        tournament = outrights.get("_event_name", "")
+    if not tournament:
+        return "Could not determine current tournament."
+
+    # Fetch content
+    content = fetch_all_expert_content(tournament)
+    if not content:
+        return f"No expert content found for {tournament}."
+
+    # Extract picks
+    picks = extract_all_picks(content)
+    if not picks:
+        return (f"Found {len(content)} sources but no explicit picks extracted. "
+                f"Sources: {', '.join(c.author for c in content)}")
+
+    # Get field names for matching
+    outrights = pull_all_outrights(tour="pga")
+    field_names = []
+    for mkt_data in outrights.values():
+        if isinstance(mkt_data, list):
+            for p in mkt_data:
+                name = p.get("player_name", "")
+                if name and name not in field_names:
+                    field_names.append(name)
+
+    signals = compute_expert_signals(picks, field_names)
+
+    # Format output
+    sorted_players = sorted(
+        signals.items(), key=lambda x: x[1]["score"], reverse=True,
+    )
+    bullish = [(n, s) for n, s in sorted_players if s["score"] > 0]
+    fades = [(n, s) for n, s in sorted_players if s["score"] < 0]
+
+    def fmt_list(items):
+        lines = []
+        for name, sig in items[:10]:
+            label = SIGNAL_LABELS.get(sig["signal"], "")
+            authors = ", ".join(p["author"] for p in sig["picks"])
+            lines.append(f"{name[:20]:<20} {sig['pick_count']}x "
+                         f"score:{sig['score']:+.1f} {label} ({authors[:30]})")
+        return "\n".join(lines)
+
+    sources = list({c.author for c in content})
+
+    return {
+        "tournament": tournament,
+        "sources_desc": f"{len(content)} sources analyzed",
+        "bullish": fmt_list(bullish) if bullish else None,
+        "fades": fmt_list(fades) if fades else None,
+        "source_count": len(content),
+        "pick_count": len(picks),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def run():
