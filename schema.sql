@@ -129,6 +129,8 @@ CREATE TABLE IF NOT EXISTS candidate_bets (
     suggested_stake REAL,
     all_book_odds JSONB,
     tranche TEXT,  -- 'favorite', 'mid', 'longshot' (from DG win prob classification)
+    coursefit_signal TEXT,
+    coursefit_sg_data JSONB,
     status TEXT DEFAULT 'pending',
     skip_reason TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()

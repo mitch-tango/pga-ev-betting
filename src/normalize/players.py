@@ -54,7 +54,7 @@ def _name_parts(name: str) -> tuple[str, str]:
 
     parts = name.split()
     if len(parts) >= 2:
-        return (parts[0], parts[-1])
+        return (" ".join(parts[:-1]), parts[-1])
     elif len(parts) == 1:
         return ("", parts[0])
     return ("", "")

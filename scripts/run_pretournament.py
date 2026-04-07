@@ -377,6 +377,16 @@ def main():
     matchups = pull_tournament_matchups(tournament_slug, tour)
     print(f"  Matchups: {len(matchups)}")
 
+    # Seed players table from DG field so prediction market resolvers can match
+    win_data = outrights.get("win", [])
+    if win_data:
+        from src.normalize.players import resolve_player
+        for p in win_data:
+            name = p.get("player_name", "")
+            dg_id = p.get("dg_id")
+            if name:
+                resolve_player(name, source="datagolf", dg_id=str(dg_id) if dg_id else None)
+
     # Date range for prediction market matching
     tournament_name_for_kalshi = outrights.get("_event_name", "")
     today = datetime.now().strftime("%Y-%m-%d")
