@@ -207,6 +207,42 @@ def _parse_sg_records(players: list[dict]) -> dict[str, dict]:
     return result
 
 
+def _pull_dg_skill_ratings(tournament_slug: str | None = None) -> dict[str, dict]:
+    """Pull SG category ratings from DataGolf's skill-ratings endpoint.
+
+    Returns dict keyed by DG player_name (Last, First) → {sg_ott, sg_app,
+    sg_arg, sg_p, sg_total}.  DG tracks all tours (PGA + LIV + DP World)
+    so this covers players missing from Betsperts ShotLink data.
+    """
+    from src.api.datagolf import DataGolfClient
+
+    dg = DataGolfClient()
+    result = dg.get_skill_ratings(tournament_slug=tournament_slug)
+    if result["status"] != "ok":
+        logger.warning("DG skill-ratings pull failed: %s", result.get("message"))
+        return {}
+
+    data = result["data"]
+    players = data.get("players", []) if isinstance(data, dict) else []
+
+    lookup = {}
+    for p in players:
+        name = p.get("player_name", "")
+        if not name:
+            continue
+        lookup[name] = {
+            "sg_ott": _safe_float(p.get("sg_ott")),
+            "sg_app": _safe_float(p.get("sg_app")),
+            "sg_arg": _safe_float(p.get("sg_arg")),
+            "sg_p": _safe_float(p.get("sg_putt")),
+            "sg_total": _safe_float(p.get("sg_total")),
+            "dg_id": p.get("dg_id"),
+        }
+
+    logger.info("DG skill-ratings: %d players loaded", len(lookup))
+    return lookup
+
+
 def pull_coursefit_data(
     tournament_name: str,
     tournament_slug: str | None = None,
@@ -216,6 +252,10 @@ def pull_coursefit_data(
     Makes two Betsperts API calls:
       1. Form window (last 12 rounds, unfiltered) → SG:OTT, SG:APP, SG:T2G
       2. Baseline window (last 50 rounds, unfiltered) → SG:P, SG:ARG
+
+    Players with insufficient Betsperts rounds (e.g., LIV players with
+    limited ShotLink data) are backfilled from DataGolf's skill-ratings
+    endpoint, which tracks all tours.
 
     Returns dict keyed by Betsperts playerName → merged record with all
     SG categories from the appropriate window, plus course-weighted composite.
@@ -254,11 +294,15 @@ def pull_coursefit_data(
     form_data = _parse_sg_records(form_players or [])
     baseline_data = _parse_sg_records(baseline_players or [])
 
+    # Pull DG skill ratings as fallback for low-sample players
+    dg_sg = _pull_dg_skill_ratings(tournament_slug)
+
     # Merge: ball-striking from form window, short game from baseline
     profile = _PROFILES.get(tournament_name, _DEFAULT_PROFILE)
     all_names = set(form_data.keys()) | set(baseline_data.keys())
 
     merged = {}
+    dg_backfill_count = 0
     for name in all_names:
         form = form_data.get(name, {})
         baseline = baseline_data.get(name, {})
@@ -274,6 +318,33 @@ def pull_coursefit_data(
         sg_p = baseline.get("sg_p")
         baseline_rounds = baseline.get("rounds")
 
+        # DG backfill: if either window has insufficient rounds, fill
+        # missing SG categories from DG skill ratings.  DG names use
+        # "Last, First" format; Betsperts uses "First Last" — try both.
+        form_ok = form_rounds is not None and form_rounds >= _FORM_MIN_ROUNDS
+        baseline_ok = baseline_rounds is not None and baseline_rounds >= _BASELINE_MIN_ROUNDS
+        needs_backfill = not form_ok or not baseline_ok
+
+        dg_source = None
+        if needs_backfill and dg_sg:
+            # Try matching: Betsperts "First Last" → DG "Last, First"
+            dg_source = _match_dg_sg(name, dg_sg)
+
+        if dg_source:
+            if not form_ok:
+                sg_ott = sg_ott if sg_ott is not None else dg_source.get("sg_ott")
+                sg_app = sg_app if sg_app is not None else dg_source.get("sg_app")
+                # DG doesn't provide T2G directly; compute if we have components
+                if sg_t2g is None and sg_ott is not None and sg_app is not None:
+                    sg_t2g = sg_ott + sg_app
+                # Set round count to threshold so signal pipeline accepts it
+                form_rounds = max(form_rounds or 0, _FORM_MIN_ROUNDS)
+            if not baseline_ok:
+                sg_arg = sg_arg if sg_arg is not None else dg_source.get("sg_arg")
+                sg_p = sg_p if sg_p is not None else dg_source.get("sg_p")
+                baseline_rounds = max(baseline_rounds or 0, _BASELINE_MIN_ROUNDS)
+            dg_backfill_count += 1
+
         # Compute course-weighted composite
         composite = _compute_weighted_composite(
             sg_ott, sg_app, sg_arg, sg_p, profile
@@ -282,21 +353,53 @@ def pull_coursefit_data(
         merged[name] = {
             "playerName": name,
             "player_num": form.get("player_num") or baseline.get("player_num"),
-            # From form window
+            # From form window (or DG backfill)
             "sg_ott": sg_ott,
             "sg_app": sg_app,
             "sg_t2g": sg_t2g,
             "form_rounds": form_rounds,
-            # From baseline window
+            # From baseline window (or DG backfill)
             "sg_arg": sg_arg,
             "sg_p": sg_p,
             "baseline_rounds": baseline_rounds,
             # Composite
             "sg_composite": composite,
             "rounds": form_rounds,  # Use form rounds as the binding sample
+            "dg_backfill": dg_source is not None,
         }
 
+    if dg_backfill_count:
+        logger.info("DG backfill: %d players supplemented with skill-ratings",
+                     dg_backfill_count)
+
     return merged
+
+
+def _match_dg_sg(betsperts_name: str, dg_sg: dict[str, dict]) -> dict | None:
+    """Match a Betsperts player name to the DG skill-ratings lookup.
+
+    Betsperts uses "First Last", DG uses "Last, First".
+    """
+    # Direct match (unlikely but cheap)
+    if betsperts_name in dg_sg:
+        return dg_sg[betsperts_name]
+
+    # Convert "First Last" → "Last, First" and try
+    norm = _normalize(betsperts_name)
+    parts = norm.split()
+    if len(parts) >= 2:
+        # Try "Last, First" format
+        last_first = f"{parts[-1]}, {' '.join(parts[:-1])}"
+        for dg_name, data in dg_sg.items():
+            if _normalize(dg_name) == last_first:
+                return data
+
+    # Fuzzy fallback: last name match
+    for dg_name, data in dg_sg.items():
+        if _names_match(betsperts_name, dg_name):
+            return data
+
+    return None
 
 
 def _compute_weighted_composite(

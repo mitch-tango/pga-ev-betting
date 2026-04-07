@@ -185,7 +185,13 @@ def extract_all_picks(
 # ── Name matching ─────────────────────────────────────────────────
 
 def _normalize(name: str) -> str:
-    return " ".join(name.lower().strip().split())
+    name = name.lower().strip()
+    # Convert "Last, First" → "first last" for consistent matching
+    if "," in name:
+        parts = [p.strip() for p in name.split(",", 1)]
+        if len(parts) == 2 and parts[1]:
+            name = f"{parts[1]} {parts[0]}"
+    return " ".join(name.split())
 
 
 def _names_match(a: str, b: str, threshold: float = 0.80) -> bool:

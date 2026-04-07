@@ -264,6 +264,29 @@ class DataGolfClient:
 
         return result
 
+    def get_skill_ratings(self, tour: str = "pga",
+                          tournament_slug: str | None = None) -> dict:
+        """Get SG category skill ratings for all players.
+
+        Returns sg_ott, sg_app, sg_arg, sg_putt, sg_total plus driving
+        stats for ~430 players across all tours (PGA + LIV + DP World).
+        Used as a fallback for players missing from Betsperts ShotLink
+        data (e.g., LIV Tour players).
+
+        Returns:
+            {"status": "ok", "data": {"last_updated": ..., "players": [...]}}
+        """
+        result = self._api_call("/preds/skill-ratings", {
+            "display": "value",
+            "tour": tour,
+        })
+
+        if result["status"] == "ok" and tournament_slug:
+            self._cache_response(result["data"], "skill_ratings",
+                                 tournament_slug)
+
+        return result
+
     # ---- Field / Results ----
 
     def get_field_updates(self, tour: str = "pga",
