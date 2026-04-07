@@ -28,6 +28,32 @@ from src.db import supabase_client as db
 import config
 
 
+def _candidate_key(c):
+    """Build a lookup key for matching a candidate to its DB record."""
+    return (c.player_name, c.market_type, c.opponent_name or "",
+            c.opponent_2_name or "", c.round_number)
+
+
+def insert_all_candidates(candidates, tournament_id, scan_type="live"):
+    """Insert all candidates to DB and return a lookup dict."""
+    if not candidates or not tournament_id:
+        return {}
+
+    rows = [c.to_db_dict(tournament_id, scan_type) for c in candidates]
+    inserted = db.insert_candidates(rows)
+
+    lookup = {}
+    for record in inserted:
+        key = (record["player_name"], record["market_type"],
+               record.get("opponent_name") or "",
+               record.get("opponent_2_name") or "",
+               record.get("round_number"))
+        lookup[key] = record["id"]
+
+    print(f"\n  Logged {len(inserted)} candidates to candidate_bets")
+    return lookup
+
+
 def main():
     parser = argparse.ArgumentParser(description="Live in-play edge detection")
     parser.add_argument("--dry-run", action="store_true")
@@ -106,19 +132,56 @@ def main():
 
     print(f"\nIMPORTANT: VERIFY book odds are still available before placing.")
 
+    # ---- Ensure tournament_id for candidate linkage ----
+    tournament_id = stats.get("tournament_id")
+    if not tournament_id and args.tournament:
+        from datetime import datetime as _dt
+        season = _dt.now().year
+        t = db.upsert_tournament(
+            tournament_name=args.tournament,
+            start_date=_dt.now().strftime("%Y-%m-%d"),
+            purse=0,
+            dg_event_id=args.tournament,
+            season=season,
+        )
+        tournament_id = t.get("id")
+        print(f"  Created fallback tournament record: {args.tournament}")
+    elif not tournament_id:
+        print("  Warning: No tournament_id — candidate linkage unavailable. "
+              "Use --tournament flag.")
+
+    # ---- Insert candidates to DB ----
+    candidate_lookup = {}
+    if not args.dry_run and candidates and tournament_id:
+        candidate_lookup = insert_all_candidates(
+            candidates, tournament_id, scan_type="live"
+        )
+
     if not args.dry_run and candidates:
         print(f"\nLog a live bet? Enter numbers (e.g., 1,3) or 'skip': ", end="")
         response = input().strip()
 
         if response.lower() in ("skip", "s", ""):
+            for c in candidates:
+                cid = candidate_lookup.get(_candidate_key(c))
+                if cid:
+                    db.update_candidate_status(cid, "skipped",
+                                               skip_reason="user skipped all")
             print("Skipped.")
             return
 
         try:
             indices = [int(x.strip()) - 1 for x in response.split(",")]
         except ValueError:
-            print("Invalid input. Skipping.")
+            print("Invalid input. Marking all candidates as skipped.")
+            for c in candidates:
+                cid = candidate_lookup.get(_candidate_key(c))
+                if cid:
+                    db.update_candidate_status(cid, "skipped",
+                                               skip_reason="malformed selection input")
             return
+
+        placed_indices = set()
 
         for idx in indices:
             if idx < 0 or idx >= len(candidates):
@@ -126,6 +189,8 @@ def main():
                 continue
 
             c = candidates[idx]
+            candidate_id = candidate_lookup.get(_candidate_key(c))
+
             display = c.player_name
             if c.opponent_name:
                 display = f"{c.player_name} vs {c.opponent_name}"
@@ -142,6 +207,9 @@ def main():
             actual_decimal = american_to_decimal(actual_odds_str)
             if actual_decimal is None:
                 print("  Invalid odds. Skipping.")
+                if candidate_id:
+                    db.update_candidate_status(candidate_id, "skipped",
+                                               skip_reason="invalid odds entry")
                 continue
 
             actual_implied = 1.0 / actual_decimal if actual_decimal > 0 else 0
@@ -149,6 +217,9 @@ def main():
 
             if actual_edge <= 0:
                 print(f"  Edge gone at {actual_odds_str}. Skipping.")
+                if candidate_id:
+                    db.update_candidate_status(candidate_id, "skipped",
+                                               skip_reason="edge gone at actual odds")
                 continue
 
             stake_str = input(f"  Stake? [${c.suggested_stake:.0f}]: ").strip()
@@ -157,8 +228,8 @@ def main():
             notes = input("  Notes: ").strip() or "live edge"
 
             bet = db.insert_bet(
-                candidate_id=None,
-                tournament_id=stats.get("tournament_id"),
+                candidate_id=candidate_id,
+                tournament_id=tournament_id,
                 market_type=c.market_type,
                 player_name=c.player_name,
                 book=c.best_book,
@@ -183,6 +254,16 @@ def main():
             if bet:
                 print(f"  ✓ Logged LIVE: {display} @ {c.best_book} "
                       f"{actual_odds_str}, ${stake:.0f}, edge {actual_edge*100:.1f}%")
+                placed_indices.add(idx)
+
+        # Mark remaining as skipped
+        for idx in range(len(candidates)):
+            if idx not in placed_indices:
+                c = candidates[idx]
+                cid = candidate_lookup.get(_candidate_key(c))
+                if cid:
+                    db.update_candidate_status(cid, "skipped",
+                                               skip_reason="not selected")
 
     elif args.dry_run:
         print("\n[DRY RUN — no bets logged]")

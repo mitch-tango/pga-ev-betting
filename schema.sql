@@ -370,3 +370,56 @@ LEFT JOIN candidate_bets cb ON b.candidate_id = cb.id
 WHERE b.clv IS NOT NULL
 GROUP BY 1, 2
 ORDER BY 1, 2;
+
+-- CLV coverage by week (monitoring: are closing odds being captured?)
+CREATE OR REPLACE VIEW v_clv_coverage AS
+SELECT
+    DATE_TRUNC('week', bet_timestamp) AS week,
+    COUNT(*) AS total_bets,
+    COUNT(*) FILTER (WHERE outcome IS NOT NULL) AS settled,
+    COUNT(*) FILTER (WHERE clv IS NOT NULL) AS has_clv,
+    ROUND(
+        100.0 * COUNT(*) FILTER (WHERE clv IS NOT NULL)
+        / NULLIF(COUNT(*) FILTER (WHERE outcome IS NOT NULL), 0), 0
+    ) AS clv_coverage_pct
+FROM bets
+GROUP BY 1
+ORDER BY 1;
+
+-- Execution slippage: scanned odds vs actual placed odds
+CREATE OR REPLACE VIEW v_execution_slippage AS
+SELECT
+    market_type,
+    book,
+    is_live,
+    COUNT(*) AS bets,
+    ROUND(AVG(1.0 / scanned_odds_decimal - 1.0 / odds_at_bet_decimal)::numeric, 4) AS avg_prob_slippage,
+    ROUND(AVG(CASE WHEN odds_at_bet_decimal < scanned_odds_decimal THEN 1 ELSE 0 END)::numeric, 2) AS pct_worse_odds,
+    ROUND(AVG((odds_at_bet_decimal - scanned_odds_decimal) / scanned_odds_decimal * 100)::numeric, 2) AS avg_odds_change_pct
+FROM bets
+WHERE scanned_odds_decimal IS NOT NULL
+  AND odds_at_bet_decimal IS NOT NULL
+  AND scanned_odds_decimal > 0
+  AND odds_at_bet_decimal > 0
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3;
+
+-- Candidate fill rate: placed vs skipped by scan type and market
+CREATE OR REPLACE VIEW v_candidate_fill_rate AS
+SELECT
+    scan_type,
+    market_type,
+    COUNT(*) AS total_candidates,
+    COUNT(*) FILTER (WHERE status = 'placed') AS placed,
+    COUNT(*) FILTER (WHERE status = 'skipped') AS skipped,
+    COUNT(*) FILTER (WHERE status = 'pending') AS still_pending,
+    ROUND(
+        100.0 * COUNT(*) FILTER (WHERE status = 'placed')
+        / NULLIF(COUNT(*), 0), 1
+    ) AS fill_rate_pct,
+    ROUND(AVG(edge)::numeric * 100, 2) AS avg_edge_pct,
+    ROUND(AVG(CASE WHEN status = 'placed' THEN edge END)::numeric * 100, 2) AS avg_placed_edge_pct,
+    ROUND(AVG(CASE WHEN status = 'skipped' THEN edge END)::numeric * 100, 2) AS avg_skipped_edge_pct
+FROM candidate_bets
+GROUP BY 1, 2
+ORDER BY 1, 2;

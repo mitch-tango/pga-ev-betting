@@ -79,24 +79,63 @@ def display_candidates(candidates, bankroll, weekly_exposure, tournament_exposur
               f"{c.edge*100:>5.1f}% ${c.suggested_stake:>4.0f} {corr_flag:>5}")
 
 
-def interactive_place_bets(candidates, tournament_id, bankroll):
+def _candidate_key(c):
+    """Build a lookup key for matching a candidate to its DB record."""
+    return (c.player_name, c.market_type, c.opponent_name or "",
+            c.opponent_2_name or "", c.round_number)
+
+
+def insert_all_candidates(candidates, tournament_id, scan_type="preround"):
+    """Insert all candidates to DB and return a lookup dict."""
+    if not candidates or not tournament_id:
+        return {}
+
+    rows = [c.to_db_dict(tournament_id, scan_type) for c in candidates]
+    inserted = db.insert_candidates(rows)
+
+    lookup = {}
+    for record in inserted:
+        key = (record["player_name"], record["market_type"],
+               record.get("opponent_name") or "",
+               record.get("opponent_2_name") or "",
+               record.get("round_number"))
+        lookup[key] = record["id"]
+
+    print(f"\n  Logged {len(inserted)} candidates to candidate_bets")
+    return lookup
+
+
+def interactive_place_bets(candidates, tournament_id, bankroll, candidate_lookup=None):
     """Interactive CLI for placing bets."""
     if not candidates:
         return
+    if candidate_lookup is None:
+        candidate_lookup = {}
 
     print(f"\nPlace bets? Enter numbers (e.g., 1,3,5) or 'skip all': ", end="")
     response = input().strip()
 
     if response.lower() in ("skip", "skip all", "s", ""):
-        reason = input("Skip reason (optional): ").strip()
+        reason = input("Skip reason (optional): ").strip() or "user skipped all"
+        for c in candidates:
+            cid = candidate_lookup.get(_candidate_key(c))
+            if cid:
+                db.update_candidate_status(cid, "skipped", skip_reason=reason)
         print(f"Skipped all.{' Reason: ' + reason if reason else ''}")
         return
 
     try:
         indices = [int(x.strip()) - 1 for x in response.split(",")]
     except ValueError:
-        print("Invalid input. Skipping.")
+        print("Invalid input. Marking all candidates as skipped.")
+        for c in candidates:
+            cid = candidate_lookup.get(_candidate_key(c))
+            if cid:
+                db.update_candidate_status(cid, "skipped",
+                                           skip_reason="malformed selection input")
         return
+
+    placed_indices = set()
 
     for idx in indices:
         if idx < 0 or idx >= len(candidates):
@@ -104,6 +143,8 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
             continue
 
         c = candidates[idx]
+        candidate_id = candidate_lookup.get(_candidate_key(c))
+
         display = c.player_name
         if c.opponent_name:
             display = f"{c.player_name} vs {c.opponent_name}"
@@ -126,6 +167,9 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
         actual_decimal = american_to_decimal(actual_odds_str)
         if actual_decimal is None:
             print(f"  Invalid odds. Skipping.")
+            if candidate_id:
+                db.update_candidate_status(candidate_id, "skipped",
+                                           skip_reason="invalid odds entry")
             continue
 
         actual_implied = 1.0 / actual_decimal if actual_decimal > 0 else 0
@@ -134,6 +178,9 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
         if actual_edge <= 0:
             print(f"  Edge gone at {actual_odds_str}. Skip? [y/N]: ", end="")
             if input().strip().lower() in ("y", "yes"):
+                if candidate_id:
+                    db.update_candidate_status(candidate_id, "skipped",
+                                               skip_reason="edge gone at actual odds")
                 continue
 
         stake_str = input(f"  Stake? [${c.suggested_stake:.0f}]: ").strip()
@@ -142,7 +189,7 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
         notes = input("  Notes (optional): ").strip() or None
 
         bet = db.insert_bet(
-            candidate_id=None,
+            candidate_id=candidate_id,
             tournament_id=tournament_id,
             market_type=c.market_type,
             player_name=c.player_name,
@@ -167,6 +214,20 @@ def interactive_place_bets(candidates, tournament_id, bankroll):
         if bet:
             print(f"  ✓ Logged: {display} @ {c.best_book} {actual_odds_str}, "
                   f"${stake:.0f}, edge {actual_edge*100:.1f}%")
+            placed_indices.add(idx)
+
+    # Mark remaining as skipped
+    skipped_indices = set(range(len(candidates))) - placed_indices
+    if skipped_indices:
+        reason = input(
+            f"\nSkip reason for remaining {len(skipped_indices)} candidates? "
+            f"(optional): "
+        ).strip() or "not selected"
+        for idx in skipped_indices:
+            c = candidates[idx]
+            cid = candidate_lookup.get(_candidate_key(c))
+            if cid:
+                db.update_candidate_status(cid, "skipped", skip_reason=reason)
 
     new_balance = db.get_bankroll()
     print(f"\nBankroll: ${new_balance:.2f}")
@@ -232,7 +293,21 @@ def main():
         if t:
             print(f"Active tournament: {t.get('tournament_name', tournament_id)}")
     else:
-        print("Warning: No active tournament detected (exposure limits approximate)")
+        # No active tournament from bets — create fallback record for candidate linkage
+        if args.tournament:
+            season = datetime.now().year
+            t = db.upsert_tournament(
+                tournament_name=args.tournament,
+                start_date=datetime.now().strftime("%Y-%m-%d"),
+                purse=0,
+                dg_event_id=args.tournament,
+                season=season,
+            )
+            tournament_id = t.get("id")
+            print(f"Warning: No active tournament from bets — created fallback: {args.tournament}")
+        else:
+            print("Warning: No active tournament detected and no --tournament flag. "
+                  "Candidate linkage will be unavailable.")
 
     # Pull round matchups
     print("\nPulling round matchups...")
@@ -355,8 +430,16 @@ def main():
 
     display_candidates(all_candidates, bankroll, weekly_exposure, tournament_exposure)
 
+    # ---- Insert candidates to DB ----
+    candidate_lookup = {}
+    if not args.dry_run and all_candidates and tournament_id:
+        candidate_lookup = insert_all_candidates(
+            all_candidates, tournament_id, scan_type="preround"
+        )
+
     if not args.dry_run and all_candidates:
-        interactive_place_bets(all_candidates, tournament_id, bankroll)
+        interactive_place_bets(all_candidates, tournament_id, bankroll,
+                               candidate_lookup=candidate_lookup)
     elif args.dry_run:
         print("\n[DRY RUN — no bets logged]")
 

@@ -23,10 +23,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.pipeline.pull_closing import (
     pull_closing_outrights, pull_closing_matchups, build_closing_snapshots,
+)
+from src.pipeline.pull_kalshi import (
+    pull_kalshi_outrights, pull_kalshi_matchups,
+    merge_kalshi_into_outrights, merge_kalshi_into_matchups,
+)
+from src.pipeline.pull_polymarket import (
+    pull_polymarket_outrights, merge_polymarket_into_outrights,
+)
+from src.pipeline.pull_prophetx import (
+    pull_prophetx_outrights, pull_prophetx_matchups,
+    merge_prophetx_into_outrights, merge_prophetx_into_matchups,
 )
 from src.core.devig import parse_american_odds
 from src.db import supabase_client as db
@@ -211,8 +222,10 @@ def main():
                         help="Tournament slug for cache")
     parser.add_argument("--tournament-id", default=None,
                         help="Supabase tournament UUID (auto-detected if omitted)")
-    parser.add_argument("--matchups", action="store_true",
-                        help="Also capture closing matchup/3-ball odds")
+    parser.add_argument("--matchups", action="store_true", default=None,
+                        help="Capture closing matchup/3-ball odds (auto-detected Thu-Sun)")
+    parser.add_argument("--no-matchups", action="store_true",
+                        help="Skip matchup closing capture even on round days")
     args = parser.parse_args()
 
     print(f"=== Closing Odds Capture ===")
@@ -227,6 +240,65 @@ def main():
         count = len(data) if isinstance(data, list) else 0
         print(f"  {market}: {count} players")
 
+    # Merge prediction market closing odds
+    tournament_name = outrights.get("_event_name", "")
+    today = datetime.now().strftime("%Y-%m-%d")
+    end_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
+
+    # Kalshi
+    if tournament_name:
+        print("\nPulling Kalshi closing odds...")
+        try:
+            kalshi_outrights = pull_kalshi_outrights(
+                tournament_name, today, end_date,
+                tournament_slug=args.tournament,
+            )
+            if any(len(v) > 0 for v in kalshi_outrights.values()):
+                merge_kalshi_into_outrights(outrights, kalshi_outrights)
+                for mkt, players in kalshi_outrights.items():
+                    if players:
+                        print(f"  Kalshi {mkt}: {len(players)} players merged")
+            else:
+                print("  Kalshi: no data")
+        except Exception as e:
+            print(f"  Kalshi unavailable ({e})")
+
+    # Polymarket
+    if getattr(config, "POLYMARKET_ENABLED", False) and tournament_name:
+        print("Pulling Polymarket closing odds...")
+        try:
+            pm_outrights = pull_polymarket_outrights(
+                tournament_name, today, end_date,
+                tournament_slug=args.tournament,
+            )
+            if any(len(v) > 0 for v in pm_outrights.values()):
+                merge_polymarket_into_outrights(outrights, pm_outrights)
+                for mkt, players in pm_outrights.items():
+                    if players:
+                        print(f"  Polymarket {mkt}: {len(players)} players merged")
+            else:
+                print("  Polymarket: no data")
+        except Exception as e:
+            print(f"  Polymarket unavailable ({e})")
+
+    # ProphetX
+    if getattr(config, "PROPHETX_ENABLED", False) and tournament_name:
+        print("Pulling ProphetX closing odds...")
+        try:
+            px_outrights = pull_prophetx_outrights(
+                tournament_name, today, end_date,
+                tournament_slug=args.tournament,
+            )
+            if any(len(v) > 0 for v in px_outrights.values()):
+                merge_prophetx_into_outrights(outrights, px_outrights)
+                for mkt, players in px_outrights.items():
+                    if players:
+                        print(f"  ProphetX {mkt}: {len(players)} players merged")
+            else:
+                print("  ProphetX: no data")
+        except Exception as e:
+            print(f"  ProphetX unavailable ({e})")
+
     # Auto-detect tournament ID
     print("\nDetecting tournament...")
     tournament_id = detect_tournament_id(outrights, args.tournament_id)
@@ -236,13 +308,46 @@ def main():
     print(f"\nBuilt {len(snapshots)} outright closing snapshots")
 
     # Pull and build matchup snapshots
-    if args.matchups:
+    # Auto-detect: capture matchups on Thu-Sun (round days) unless --no-matchups
+    capture_matchups = args.matchups
+    if capture_matchups is None and not args.no_matchups:
+        day_of_week = datetime.now().weekday()  # 0=Mon, 3=Thu, 6=Sun
+        capture_matchups = day_of_week >= 3  # Thu-Sun
+        if capture_matchups:
+            print(f"\nAuto-detecting round day — capturing matchup closing odds")
+
+    if capture_matchups:
         print("\nPulling closing matchup odds...")
         matchup_data = pull_closing_matchups(args.tournament, args.tour)
         round_matchups = matchup_data.get("round_matchups", [])
         three_balls = matchup_data.get("3_balls", [])
         print(f"  Round matchups: {len(round_matchups)}")
         print(f"  3-balls: {len(three_balls)}")
+
+        # Merge prediction market matchups
+        if tournament_name:
+            try:
+                kalshi_matchups = pull_kalshi_matchups(
+                    tournament_name, today, end_date,
+                    tournament_slug=args.tournament,
+                )
+                if kalshi_matchups and round_matchups:
+                    merge_kalshi_into_matchups(round_matchups, kalshi_matchups)
+                    print(f"  Kalshi matchups: {len(kalshi_matchups)} merged")
+            except Exception as e:
+                print(f"  Kalshi matchups unavailable ({e})")
+
+            if getattr(config, "PROPHETX_ENABLED", False):
+                try:
+                    px_matchups = pull_prophetx_matchups(
+                        tournament_name, today, end_date,
+                        tournament_slug=args.tournament,
+                    )
+                    if px_matchups and round_matchups:
+                        merge_prophetx_into_matchups(round_matchups, px_matchups)
+                        print(f"  ProphetX matchups: {len(px_matchups)} merged")
+                except Exception as e:
+                    print(f"  ProphetX matchups unavailable ({e})")
 
         matchup_snapshots = build_closing_matchup_snapshots(
             round_matchups, three_balls, tournament_id

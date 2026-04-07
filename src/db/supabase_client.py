@@ -456,3 +456,21 @@ def get_clv_by_tranche() -> list[dict]:
     """Query the v_clv_by_tranche view."""
     result = client().table("v_clv_by_tranche").select("*").execute()
     return result.data
+
+
+def get_clv_coverage() -> list[dict]:
+    """Query the v_clv_coverage view."""
+    result = client().table("v_clv_coverage").select("*").execute()
+    return result.data
+
+
+def get_execution_slippage() -> list[dict]:
+    """Query the v_execution_slippage view."""
+    result = client().table("v_execution_slippage").select("*").execute()
+    return result.data
+
+
+def get_candidate_fill_rate() -> list[dict]:
+    """Query the v_candidate_fill_rate view."""
+    result = client().table("v_candidate_fill_rate").select("*").execute()
+    return result.data
