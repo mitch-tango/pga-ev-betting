@@ -62,7 +62,7 @@ def _parse_line(line: str) -> dict | None:
     m = re.search(
         r"(\d{4,5})\s+"           # bet number (4-5 digits)
         r"(.+?)\s+"               # player name (greedy but stops at odds)
-        r"([+-]\d{3,4})\s",       # moneyline odds (+135, -155)
+        r"([+-]\d{3,4})(?:\s|$)",  # moneyline odds (+135, -155)
         line,
     )
     if not m:
@@ -79,11 +79,19 @@ def _parse_line(line: str) -> dict | None:
     return {"number": number, "name": name, "moneyline": moneyline}
 
 
+_STOP_PATTERNS = re.compile(
+    r"(ODDS TO WIN|TOP \d+ FINISH|TO MAKE THE CUT|TOP \d+\s*\(INCLUDING)",
+    re.IGNORECASE,
+)
+
+
 def parse_start_matchups(text: str) -> list[dict]:
     """Parse copy-pasted Start matchup text into structured matchup records.
 
     Args:
         text: Raw text copied from Start sportsbook matchups page.
+              May contain outright sections after the matchup section;
+              parsing stops at the first non-matchup header.
 
     Returns:
         List of matchup dicts, each with:
@@ -103,9 +111,18 @@ def parse_start_matchups(text: str) -> list[dict]:
             round_number = rn
             break
 
-    # Parse all player lines
+    # Parse player lines, stopping at non-matchup section headers
     parsed_players = []
+    in_matchup_section = False
     for line in lines:
+        # Detect start of matchup section
+        if "MATCHUP" in line.upper():
+            in_matchup_section = True
+
+        # Stop at outright/placement section headers
+        if in_matchup_section and _STOP_PATTERNS.search(line):
+            break
+
         result = _parse_line(line)
         if result:
             parsed_players.append(result)

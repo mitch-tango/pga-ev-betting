@@ -20,10 +20,19 @@ Last updated: 2026-04-06
 - **Expert picks signal**: YouTube transcript extraction (Rick Gehman, Pat Mayo, Betsperts) + Claude API (Haiku) pick extraction; aggregated consensus signal per player with sentiment scoring; candidate annotation with EP column; Discord `/expertpicks` command; Betsperts article support via cached text files
 
 - **Dashboard / Web UI**: Streamlit app with 4 pages (Active Bets, Performance, Bankroll, Model Health); Supabase data layer with cached queries; Plotly charts for P&L curves, calibration, CLV trends, edge tier analysis; deployed on Streamlit Cloud
+- **Candidate lifecycle tracking**: All candidates inserted to DB before placement, linked to bets via candidate_id, skip reasons tracked. Monitoring views: v_clv_coverage, v_execution_slippage, v_candidate_fill_rate
 
 ---
 
-## Next Up
+## Quick Wins / To-Do
+
+- [ ] **Expand course profiles** — Only 8 of ~40+ PGA Tour venues have profiles. Build profiles for upcoming tournament venues using Betsperts course stats pages. Improves course-fit signal quality for data collection phase.
+- [ ] **Run `scripts/status.py` health check** — Check current data volumes (settled bets, CLV coverage %, fill rates) to gauge how close Phase 3 validation items are.
+- [ ] **Verify candidate lifecycle end-to-end** — Run a pretournament scan (dry-run or real) and confirm candidates are inserted, linked, and skip-tracked correctly in Supabase.
+
+---
+
+## Next Up (awaiting data)
 
 ### 0. Course-Fit Signal → Kelly Modifier
 **Priority: High** | Effort: Low-Medium

@@ -40,7 +40,8 @@ from src.pipeline.pull_prophetx import (
     merge_prophetx_into_outrights, merge_prophetx_into_matchups,
 )
 from src.parsers.start_matchups import parse_start_matchups_from_file
-from src.parsers.start_merger import merge_start_into_matchups
+from src.parsers.start_outrights import parse_start_outrights_from_file
+from src.parsers.start_merger import merge_start_into_matchups, merge_start_into_outrights
 from src.core.edge import calculate_placement_edges, calculate_matchup_edges
 from src.core.arb import detect_matchup_arbs, format_arb_table
 from src.core.devig import american_to_decimal, decimal_to_american, parse_american_odds
@@ -56,6 +57,9 @@ MARKET_MAP = {
     "top_20": "t20",
     "make_cut": "make_cut",
 }
+
+
+from config import MARKET_DISPLAY
 
 
 def display_candidates(candidates, bankroll, weekly_exposure, tournament_exposure):
@@ -94,7 +98,8 @@ def display_candidates(candidates, bankroll, weekly_exposure, tournament_exposur
         cf = cf_fmt(c.coursefit_signal)
         ep = ep_fmt(c.expert_signal)
 
-        print(f" {i:>3}  {display_name:<22} {c.market_type:<8} "
+        mkt_label = MARKET_DISPLAY.get(c.market_type, c.market_type)
+        print(f" {i:>3}  {display_name:<22} {mkt_label:<8} "
               f"{c.best_book:<12} {c.best_odds_american:>7} "
               f"{c.your_prob*100:>5.1f}% {c.best_implied_prob*100:>5.1f}% "
               f"{c.edge*100:>5.1f}% ${c.suggested_stake:>4.0f} {corr_flag:>5} {cf} {ep}")
@@ -430,15 +435,27 @@ def main():
                          tournament_slug=tournament_slug)
 
     # Merge Start odds if provided
-    if args.start_file and matchups:
+    if args.start_file:
         print(f"\nMerging Start odds from {args.start_file}...")
-        start_matchups = parse_start_matchups_from_file(args.start_file)
-        print(f"  Start matchups parsed: {len(start_matchups)}")
-        matchups, unmatched = merge_start_into_matchups(matchups, start_matchups)
-        matched = len(start_matchups) - len(unmatched)
-        print(f"  Matched to DG: {matched} | Unmatched: {len(unmatched)}")
-        for u in unmatched:
-            print(f"    ? {u['p1_name']} vs {u['p2_name']}")
+
+        # Outrights (win, t10, t20, make_cut)
+        start_outrights = parse_start_outrights_from_file(args.start_file)
+        if start_outrights:
+            outright_stats = merge_start_into_outrights(outrights, start_outrights)
+            for mkt, count in outright_stats.items():
+                total = len(start_outrights.get(mkt, []))
+                print(f"  Start {mkt}: {count}/{total} players matched")
+
+        # Matchups
+        if matchups:
+            start_matchups = parse_start_matchups_from_file(args.start_file)
+            if start_matchups:
+                print(f"  Start matchups parsed: {len(start_matchups)}")
+                matchups, unmatched = merge_start_into_matchups(matchups, start_matchups)
+                matched = len(start_matchups) - len(unmatched)
+                print(f"  Matched to DG: {matched} | Unmatched: {len(unmatched)}")
+                for u in unmatched:
+                    print(f"    ? {u['p1_name']} vs {u['p2_name']}")
 
     # ---- Pull Betsperts course-fit data (graceful degradation) ----
     coursefit_signals = {}
