@@ -208,6 +208,24 @@ def calculate_placement_edges(
     if exchange_only:
         books_in_data = books_in_data & config.EXCHANGE_BOOKS
 
+    # For make_cut, compute event-specific expected outcomes from DG model
+    # rather than hardcoding 65 (which assumes standard PGA 156-player fields).
+    # The Masters, for example, has ~91 players with a top-50+ties cut.
+    if market_type == "make_cut":
+        dg_mc_sum = 0.0
+        for player in outrights_data:
+            dg_data = player.get("datagolf", {})
+            if isinstance(dg_data, dict):
+                dg_odds_str = str(dg_data.get("baseline_history_fit") or
+                                  dg_data.get("baseline") or "")
+            else:
+                dg_odds_str = str(dg_data or "")
+            dg_p = parse_american_odds(dg_odds_str)
+            if dg_p is not None and dg_p > 0:
+                dg_mc_sum += dg_p
+        mc_expected = dg_mc_sum if dg_mc_sum > 0 else 65
+        logger.info("make_cut expected_outcomes: %.1f (DG model sum)", mc_expected)
+
     # Step 2: De-vig each book's full field
     book_devigged = {}
     for book in books_in_data:
@@ -223,8 +241,9 @@ def calculate_placement_edges(
                 devigged = power_devig(raw_probs)
             else:
                 # Placement markets: use independent de-vig
-                expected = {"t5": 5, "t10": 10, "t20": 20,
-                            "make_cut": 65}.get(market_type, 20)
+                expected = {"t5": 5, "t10": 10, "t20": 20}.get(market_type, 20)
+                if market_type == "make_cut":
+                    expected = mc_expected
                 devigged = devig_independent(raw_probs, expected, len(raw_probs))
             book_devigged[book] = devigged
 
@@ -286,11 +305,10 @@ def calculate_placement_edges(
             if book_prob <= 0 or book_prob >= 1:
                 continue
 
-            raw_edge = your_prob - book_prob
-
+            # Determine the actual bettable decimal odds.
             # For prediction markets with ask-based pricing, use the
-            # _{book}_ask_prob value for bettable decimal (actual cost).
-            # This covers kalshi, polymarket, prophetx, and any future market.
+            # _{book}_ask_prob value (actual cost to buy a contract).
+            # For sportsbooks, use the actual offered American odds.
             ask_key = f"_{book}_ask_prob"
             ask_val = player.get(ask_key)
             if (ask_val is not None
@@ -298,14 +316,24 @@ def calculate_placement_edges(
                     and not isinstance(ask_val, bool)
                     and 0 < float(ask_val) < 1):
                 bettable_decimal = binary_price_to_decimal(str(ask_val))
-                all_odds[book] = bettable_decimal
             else:
                 if ask_val is not None:
                     logger.warning(
                         "Invalid %s value %r for %s, using standard pricing",
                         ask_key, ask_val, player.get("player_name", "unknown"))
-                bettable_decimal = implied_prob_to_decimal(book_prob)
-                all_odds[book] = american_to_decimal(str(player.get(book, "")))
+                bettable_decimal = american_to_decimal(str(player.get(book, "")))
+
+            if bettable_decimal is None or bettable_decimal <= 1:
+                continue
+
+            all_odds[book] = bettable_decimal
+
+            # Edge is calculated against the actual implied probability
+            # from the offered odds — this is what you'd actually pay.
+            # De-vigged book_prob is used upstream for consensus blending
+            # but NOT for edge evaluation.
+            actual_implied = 1.0 / bettable_decimal
+            raw_edge = your_prob - actual_implied
 
             # Per-book dead-heat adjustment: binary contract markets
             # pay full value on ties, so no DH reduction needed
@@ -319,7 +347,7 @@ def calculate_placement_edges(
             if adj_edge > best_adjusted_edge:
                 best_adjusted_edge = adj_edge
                 best_book = book
-                best_book_prob = book_prob
+                best_book_prob = actual_implied
                 best_decimal = bettable_decimal
                 best_raw_edge = raw_edge
                 best_dh_adj = dh_adj

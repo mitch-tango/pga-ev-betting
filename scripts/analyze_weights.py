@@ -879,7 +879,10 @@ def _load_oad_outright_records(market: str, start_year: int = 2020,
                 devigged = power_devig(raw_probs)
             else:
                 from src.core.devig import devig_independent
-                expected = {"top_20": 20, "top_10": 10, "make_cut": 65}.get(market, 20)
+                expected = {"top_20": 20, "top_10": 10}.get(market, 20)
+                if market == "make_cut":
+                    # Use DG model sum as event-specific expected outcomes
+                    expected = sum(v["dg_prob"] for v in player_lookup.values()) or 65
                 devigged = devig_independent(raw_probs, expected, len(raw_probs))
 
             # Build dg_id -> devigged prob

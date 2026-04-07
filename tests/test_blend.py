@@ -113,7 +113,7 @@ class TestGetBlendWeights:
     def test_placement_mid_tranche(self):
         w = get_blend_weights("t20", tranche="mid")
         assert w == config.PLACEMENT_TRANCHE_WEIGHTS["mid"]
-        assert w["dg"] == 0.55
+        assert w["dg"] == 0.45
 
     def test_placement_longshot_tranche(self):
         w = get_blend_weights("t10", tranche="longshot")
@@ -124,9 +124,20 @@ class TestGetBlendWeights:
         w = get_blend_weights("t20")
         assert w == config.BLEND_WEIGHTS["placement"]
 
-    def test_make_cut_ignores_tranche(self):
-        """Make-cut uses global 80% DG (no tranche split — unstable)."""
+    def test_make_cut_uses_tranche(self):
+        """Make-cut now uses tranche-specific weights (revalidated 2026-04-07)."""
         w = get_blend_weights("make_cut", tranche="favorite")
+        assert w == config.MAKE_CUT_TRANCHE_WEIGHTS["favorite"]
+        assert w["dg"] == 0.85
+
+    def test_make_cut_mid_tranche(self):
+        w = get_blend_weights("make_cut", tranche="mid")
+        assert w == config.MAKE_CUT_TRANCHE_WEIGHTS["mid"]
+        assert w["dg"] == 0.70
+
+    def test_make_cut_no_tranche_uses_global(self):
+        """Without tranche info, falls back to global 80% DG."""
+        w = get_blend_weights("make_cut")
         assert w == config.BLEND_WEIGHTS["make_cut"]
         assert w["dg"] == 0.80
 

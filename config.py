@@ -137,13 +137,23 @@ TRANCHE_THRESHOLDS = {
 }
 
 # Placement (T10/T20): DG dominates, especially for favorites.
-# Favorites at 100% DG: stable across both periods (100%→100%).
-# Mid at 55%: drifting toward DG but unstable — keep current.
-# Longshots at 45%: stable (T10: 55%→45%, T20: 60%→50%).
+# Revalidated 2026-04-07 with corrected make_cut de-vig (31K+ player-events).
+# Favorites at 100% DG: strongly confirmed (monotonic improvement to 100%).
+# Mid at 45%: T10 optimal=40%, T20 optimal=75%, split conservatively.
+# Longshots at 45%: T10 optimal=40%, T20 optimal=50%, midpoint holds.
 PLACEMENT_TRANCHE_WEIGHTS = {
-    "favorite": {"dg": 1.00, "books": 0.00},  # Stable: 100% both periods
-    "mid":      {"dg": 0.55, "books": 0.45},  # Keep current — drift unstable
-    "longshot": {"dg": 0.45, "books": 0.55},  # Stable: ~45-50% both periods
+    "favorite": {"dg": 1.00, "books": 0.00},  # Confirmed: monotonic to 100% both T10/T20
+    "mid":      {"dg": 0.45, "books": 0.55},  # Was 0.55; T10=40%, T20=75%, conservative split
+    "longshot": {"dg": 0.45, "books": 0.55},  # Unchanged: T10=40%, T20=50%, midpoint
+}
+
+# Make-cut: from 101-event backtest (13,296 player-events, 2020-2026).
+# Revalidated 2026-04-07 with event-specific expected_outcomes (DG model sum).
+# Favorites: 85% DG (was global 80%). Mid: 70% DG (was 80%). Longshot: 80% (unchanged).
+MAKE_CUT_TRANCHE_WEIGHTS = {
+    "favorite": {"dg": 0.85, "books": 0.15},  # N=390; optimal=85%, was 80% global
+    "mid":      {"dg": 0.70, "books": 0.30},  # N=4,671; clear optimum, was 80% global
+    "longshot": {"dg": 0.80, "books": 0.20},  # N=8,235; matches current global
 }
 
 # Matchups: from 99-event backtest (19,901 records, 2022-2026).
@@ -242,3 +252,11 @@ PLACEMENT_MARKETS = {"win", "t10", "t20", "make_cut"}
 MATCHUP_MARKETS = {"tournament_matchup", "round_matchup"}
 THREE_BALL_MARKETS = {"3_ball"}
 ALL_MARKETS = PLACEMENT_MARKETS | MATCHUP_MARKETS | THREE_BALL_MARKETS
+
+# Display labels for CLI output (internal values are unchanged)
+MARKET_DISPLAY = {
+    "make_cut": "MkCt",
+    "tournament_matchup": "TnMtch",
+    "round_matchup": "RdMtch",
+    "3_ball": "3Ball",
+}

@@ -70,6 +70,8 @@ def get_blend_weights(market_type: str, is_signature: bool = False,
             return config.PLACEMENT_TRANCHE_WEIGHTS[tranche]
         return config.BLEND_WEIGHTS["placement"]
     elif market_type == "make_cut":
+        if tranche and tranche in config.MAKE_CUT_TRANCHE_WEIGHTS:
+            return config.MAKE_CUT_TRANCHE_WEIGHTS[tranche]
         return config.BLEND_WEIGHTS["make_cut"]
     elif market_type in ("tournament_matchup", "round_matchup"):
         if tranche and tranche in config.MATCHUP_TRANCHE_WEIGHTS:
