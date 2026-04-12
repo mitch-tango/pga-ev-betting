@@ -71,18 +71,29 @@ def _clean_name(name: str) -> str:
     return name
 
 
+_MARKET_TYPE_KEYWORDS = {
+    "win": ["winner"],
+    "t10": ["top 10", "top10", "top-10"],
+    "t20": ["top 20", "top20", "top-20"],
+}
+
+
 def match_tournament(
     events: list[dict],
     tournament_name: str,
     tournament_start: str,
     tournament_end: str,
+    market_type: str | None = None,
 ) -> dict | None:
     """Find the Polymarket event matching the current DG tournament.
 
     Matching strategy:
     1. Date-based: UTC date range overlap (event_start <= tourn_end AND event_end >= tourn_start)
-    2. Fuzzy name fallback: token-based similarity ≥ 0.85
-    3. Safety check: reject non-PGA events
+    2. Within date matches, prefer events whose title/slug matches the market_type
+       (e.g., "Top 10" for t10) to avoid cross-contamination when the API filter
+       returns all events regardless of sports_market_types.
+    3. Fuzzy name fallback: token-based similarity ≥ 0.85
+    4. Safety check: reject non-PGA events
 
     Returns full event dict (with nested markets[]), or None if no match.
     """
@@ -94,6 +105,16 @@ def match_tournament(
     # Build list of names to match against (primary + aliases)
     match_names = [tourney_lower]
     match_names.extend(_TOURNAMENT_ALIASES.get(tourney_lower, []))
+
+    # Keywords that must appear in the event title/slug for this market type
+    mkt_keywords = _MARKET_TYPE_KEYWORDS.get(market_type, []) if market_type else []
+
+    def _has_market_type_match(event: dict) -> bool:
+        """Check if event title or slug contains the expected market type keyword."""
+        if not mkt_keywords:
+            return True  # no filtering needed
+        text = (event.get("title", "") + " " + event.get("slug", "")).lower()
+        return any(kw in text for kw in mkt_keywords)
 
     def _name_score(title: str) -> float:
         """Score how well an event title matches the tournament name."""
@@ -131,10 +152,26 @@ def match_tournament(
             date_candidates.append((score, event))
 
     if date_candidates:
+        # If we have market_type keywords, prefer candidates that match them
+        if mkt_keywords:
+            typed = [(s, e) for s, e in date_candidates if _has_market_type_match(e)]
+            if typed:
+                typed.sort(key=lambda x: x[0], reverse=True)
+                return typed[0][1]
+            # No typed match → this market type doesn't exist on Polymarket
+            logger.info(
+                "Polymarket: no event matched market_type=%s keywords %s "
+                "(had %d date-matched events)", market_type, mkt_keywords, len(date_candidates),
+            )
+            return None
+
         date_candidates.sort(key=lambda x: x[0], reverse=True)
         return date_candidates[0][1]
 
-    # Pass 2: fuzzy name fallback
+    # Pass 2: fuzzy name fallback (only when no market_type filter)
+    if mkt_keywords:
+        return None
+
     best_match = None
     best_score = 0.0
 
@@ -174,7 +211,8 @@ def match_all_market_types(
             logger.warning("Failed to fetch Polymarket events for %s", market_type)
             continue
 
-        event = match_tournament(events, tournament_name, tournament_start, tournament_end)
+        event = match_tournament(events, tournament_name, tournament_start, tournament_end,
+                                 market_type=market_type)
         if event:
             matched[market_type] = event
         else:
