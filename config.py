@@ -110,6 +110,7 @@ ALERT_ENABLED = bool(os.getenv("DISCORD_ALERT_CHANNEL_ID", ""))
 LIVE_MONITOR_INTERVAL_MIN = 15    # Minutes between live scans during rounds
 LIVE_MONITOR_START_HOUR = 8      # Start monitoring at 8 AM ET
 LIVE_MONITOR_END_HOUR = 19       # Stop monitoring at 7 PM ET
+LIVE_MONITOR_AUTOSTART = True    # Auto-start live monitor on bot boot during tournament hours (Thu-Sun, 8AM-7PM ET)
 
 # --- Blend Weights ---
 # Win/placement weights from OAD backtest (278 events, 2020-2026).

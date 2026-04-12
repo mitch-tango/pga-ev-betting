@@ -256,6 +256,37 @@ class EVBot(discord.Client):
             self._edge_gone_task = self.loop.create_task(self._edge_gone_loop())
             log.info("Scheduled alerts enabled (channel %s)", config.DISCORD_ALERT_CHANNEL_ID)
 
+        # Auto-resume live monitoring on boot during tournament hours so a
+        # restart (manual or auto-sync triggered) doesn't silently disable
+        # the live scans the user was relying on.
+        if getattr(config, "LIVE_MONITOR_AUTOSTART", False):
+            self.loop.create_task(self._maybe_autostart_live_monitor())
+
+    async def _maybe_autostart_live_monitor(self):
+        """Start the live monitor if we're inside a tournament window.
+
+        Tournament rounds run Thu-Sun (R1-R4), and the live monitor itself
+        only acts between LIVE_MONITOR_START_HOUR and LIVE_MONITOR_END_HOUR
+        ET — we mirror that gating here so we don't spawn a no-op task
+        during off-hours / off-days.
+        """
+        await self.wait_until_ready()
+        now_et = datetime.now(ET)
+        weekday = now_et.weekday()  # 0=Mon … 6=Sun
+        if weekday not in (3, 4, 5, 6):
+            log.info("Live monitor autostart skipped: %s is not a tournament day",
+                     now_et.strftime("%A"))
+            return
+        if now_et.hour < config.LIVE_MONITOR_START_HOUR or now_et.hour >= config.LIVE_MONITOR_END_HOUR:
+            log.info("Live monitor autostart skipped: %s ET outside %d-%d window",
+                     now_et.strftime("%H:%M"),
+                     config.LIVE_MONITOR_START_HOUR, config.LIVE_MONITOR_END_HOUR)
+            return
+        round_number = weekday - 2  # Thu→1, Fri→2, Sat→3, Sun→4
+        log.info("Live monitor autostart: R%d (%s ET)",
+                 round_number, now_et.strftime("%H:%M"))
+        await self.start_live_monitor(tour="pga", round_number=round_number)
+
     async def on_ready(self):
         log.info(f"Bot ready: {self.user} ({self.user.id})")
 
