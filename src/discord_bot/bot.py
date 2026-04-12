@@ -106,16 +106,18 @@ def _render_candidates_image(candidates, title: str, arbs=None) -> str:
             profit = config.ARB_DEFAULT_RETURN - total_outlay
             names = " v ".join(leg.player.split(",")[0][:14] for leg in arb.legs)
             legs = " / ".join(f"{leg.book[:8]}" for leg in arb.legs)
+            # Escape $ so matplotlib mathtext doesn't treat "$...$" as math mode
+            stakes = " / ".join(f"\\${leg.stake:.2f}" for leg in arb.legs)
             warn = "*" if arb.settlement_warning else ""
             arb_data.append([
                 str(j), names[:28], arb.market_type[:8], legs[:20],
-                f"{arb.margin*100:.1f}%", f"${profit:.2f}{warn}",
+                f"{arb.margin*100:.1f}%", stakes, f"${profit:.2f}{warn}",
             ])
 
     cand_columns = ["#", "Player", "Market", "Book", "Odds", "Model", "Book%", "Edge", "Min", "Stake"]
     cand_widths =  [0.04, 0.28,     0.08,     0.11,   0.08,   0.08,    0.08,    0.08,   0.06,  0.08]
-    arb_columns = ["#", "Players", "Market", "Books", "Margin", "Profit"]
-    arb_widths =  [0.04, 0.36,     0.10,     0.22,    0.12,     0.16]
+    arb_columns = ["#", "Players", "Market", "Books", "Margin", "Stakes", "Profit"]
+    arb_widths =  [0.04, 0.30,     0.10,     0.20,    0.08,     0.16,     0.12]
 
     # Calculate figure height
     n_cand = max(len(cand_data), 1)  # at least 1 row for "no candidates" message
