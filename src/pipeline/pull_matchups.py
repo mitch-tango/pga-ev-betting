@@ -7,6 +7,8 @@ Pulls tournament matchups, round matchups, and 3-ball odds from DG API.
 Used by run_pretournament.py and run_preround.py.
 """
 
+from datetime import datetime, timedelta, timezone
+
 from src.api.datagolf import DataGolfClient
 
 
@@ -87,12 +89,31 @@ def pull_all_pairings(tournament_slug: str | None = None,
     return []
 
 
-def build_field_status_lookup(tour: str = "pga") -> dict[str, dict]:
-    """Return {dg_id: {thru, status}} for the current field.
+def build_field_status_lookup(tour: str = "pga") -> dict:
+    """Return field/timing info for filtering stale round matchups.
 
-    `thru` comes through as DG sends it (None/"", numeric string, or "F").
-    Used to drop stale round matchups / 3-balls whose players have already
-    teed off.
+    DG's field_updates payload exposes `current_round`, `tz_offset` (seconds
+    from UTC), and a per-player `teetimes` list (one entry per scheduled
+    round). It does NOT expose live `thru` or `status`, so staleness must
+    be derived from the current round's tee time vs. the venue-local clock.
+    A player with no tee time entry for the current round is treated as
+    cut / WD / MDF.
+
+    Returned shape:
+        {
+          "current_round": int,
+          "now_local": datetime,    # naive, in venue timezone
+          "players": {
+              dg_id: {
+                  "round_teetime": datetime | None,   # naive, venue tz
+                  "in_field_for_round": bool,
+              },
+              ...
+          },
+        }
+
+    Returns an empty dict if the endpoint fails or `current_round` is
+    missing — callers treat that as "skip filtering".
     """
     dg = DataGolfClient()
     resp = dg.get_field_updates(tour=tour)
@@ -100,71 +121,83 @@ def build_field_status_lookup(tour: str = "pga") -> dict[str, dict]:
         return {}
 
     raw = resp.get("data") or {}
-    field = raw.get("field", []) if isinstance(raw, dict) else []
+    if not isinstance(raw, dict):
+        return {}
 
-    lookup: dict[str, dict] = {}
-    for p in field:
+    current_round = raw.get("current_round")
+    if not current_round:
+        return {}
+
+    tz_offset_seconds = raw.get("tz_offset") or 0
+    now_local = (
+        datetime.now(timezone.utc) + timedelta(seconds=tz_offset_seconds)
+    ).replace(tzinfo=None)
+
+    players: dict[str, dict] = {}
+    for p in raw.get("field", []) or []:
         dg_id = str(p.get("dg_id", "")).strip()
         if not dg_id:
             continue
-        lookup[dg_id] = {
-            "thru": p.get("thru"),
-            "status": (p.get("status") or "active").lower(),
+        round_teetime = None
+        in_field_for_round = False
+        for tt in p.get("teetimes") or []:
+            if tt.get("round_num") != current_round:
+                continue
+            in_field_for_round = True
+            ts = tt.get("teetime")
+            if isinstance(ts, str) and ts:
+                try:
+                    round_teetime = datetime.strptime(ts, "%Y-%m-%d %H:%M")
+                except ValueError:
+                    round_teetime = None
+            break
+        players[dg_id] = {
+            "round_teetime": round_teetime,
+            "in_field_for_round": in_field_for_round,
         }
-    return lookup
+
+    return {
+        "current_round": current_round,
+        "now_local": now_local,
+        "players": players,
+    }
 
 
-def _is_player_stale(dg_id: str, field_lookup: dict[str, dict]) -> bool:
-    """Return True if a player has already teed off the current round,
-    finished it, or is otherwise unavailable (cut/WD/DQ).
+def _is_player_stale(dg_id: str, field_lookup: dict) -> bool:
+    """Return True if a player has already teed off the current round
+    or has no tee time for it (cut / WD / MDF).
 
-    Conservative: players missing from the field lookup are treated as
-    NOT stale (we'd rather surface a false positive than silently drop
-    a valid matchup when the field endpoint is incomplete).
+    Conservative: players missing from the field lookup entirely (and
+    empty/missing lookups) are treated as NOT stale.
     """
-    info = field_lookup.get(str(dg_id).strip())
+    if not field_lookup:
+        return False
+    players = field_lookup.get("players") or {}
+    info = players.get(str(dg_id).strip())
     if not info:
         return False
-
-    status = info.get("status", "active")
-    if status in ("cut", "mdf", "wd", "dq"):
+    if not info.get("in_field_for_round"):
         return True
-
-    thru = info.get("thru")
-    if thru is None:
+    teetime = info.get("round_teetime")
+    now_local = field_lookup.get("now_local")
+    if teetime is None or now_local is None:
         return False
-    # DG sends "" or None for "hasn't teed off"
-    if isinstance(thru, str):
-        s = thru.strip()
-        if not s:
-            return False
-        # "F" = finished this round; any numeric string = in progress
-        return s.upper() == "F" or s.isdigit()
-    if isinstance(thru, (int, float)):
-        return thru > 0
-    return False
+    return teetime <= now_local
 
 
 def filter_stale_matchups(
     matchups: list[dict],
-    field_lookup: dict[str, dict],
+    field_lookup: dict,
     *,
     n_players: int = 2,
 ) -> list[dict]:
     """Drop round matchups / 3-balls whose players have already teed off
-    (or are finished / cut / WD / DQ).
+    or aren't in the field for the current round.
 
-    Args:
-        matchups: DG matchup records (round_matchups or 3_balls)
-        field_lookup: output of `build_field_status_lookup`
-        n_players: 2 for H2H matchups, 3 for 3-balls
-
-    Returns:
-        Filtered list. Empty field_lookup short-circuits (returns input
-        unchanged) so staleness filtering never hides edges when the
-        field endpoint fails.
+    Empty `field_lookup` short-circuits (returns input unchanged) so
+    staleness filtering never hides edges when the field endpoint fails.
     """
-    if not field_lookup or not matchups:
+    if not field_lookup or not field_lookup.get("players") or not matchups:
         return matchups
 
     keys = [f"p{i}_dg_id" for i in range(1, n_players + 1)]
