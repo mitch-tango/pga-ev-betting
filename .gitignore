@@ -30,3 +30,17 @@ dashboard/.streamlit/secrets.toml
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Local-only planning artifacts (deep-plan / deep-project session state).
+# roadmap.md is the single tracked artifact for forward planning.
+planning/
+
+# Cached expert article text (regenerable from sources)
+experts/
+
+# Tournament-week scratch outputs at the repo root.
+# Real datasets belong in data/raw/ which is already ignored.
+/composite_odds_*.csv
+/masters_*
+/r[0-9]_*.csv
+/*_paste.txt
