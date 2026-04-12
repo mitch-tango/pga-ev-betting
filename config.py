@@ -210,7 +210,8 @@ MIN_EDGE = {
 # Display floor for scan output. Candidates between DISPLAY_MIN_EDGE and the
 # market's MIN_EDGE are shown for visibility but flagged as sub-threshold
 # (no Kelly stake computed, surfaced as info-only in the report).
-DISPLAY_MIN_EDGE = 0.01
+# Anything below DISPLAY_MIN_EDGE is dropped entirely — too noisy to be useful.
+DISPLAY_MIN_EDGE = 0.03
 
 # --- Kelly Sizing ---
 KELLY_FRACTION = 0.25         # Quarter-Kelly

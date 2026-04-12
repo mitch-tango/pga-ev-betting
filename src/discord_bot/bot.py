@@ -36,6 +36,8 @@ from src.pipeline.pull_matchups import (
     pull_tournament_matchups,
     pull_round_matchups,
     pull_3balls,
+    build_field_status_lookup,
+    filter_stale_matchups,
 )
 from src.pipeline.pull_kalshi import (
     pull_kalshi_outrights, pull_kalshi_matchups,
@@ -1520,6 +1522,13 @@ def _run_preround_scan(tour: str, round_number: int | None):
 
     round_matchups = pull_round_matchups(None, tour)
     three_balls = pull_3balls(None, tour)
+
+    # Drop matchups whose players have already teed off / been cut / WD'd.
+    field_lookup = build_field_status_lookup(tour=tour)
+    if round_matchups:
+        round_matchups = filter_stale_matchups(round_matchups, field_lookup, n_players=2)
+    if three_balls:
+        three_balls = filter_stale_matchups(three_balls, field_lookup, n_players=3)
 
     all_candidates = []
 

@@ -19,7 +19,10 @@ lines is where live edges appear.
 
 from src.pipeline.pull_live import pull_live_predictions
 from src.pipeline.pull_outrights import pull_all_outrights
-from src.pipeline.pull_matchups import pull_round_matchups, pull_3balls
+from src.pipeline.pull_matchups import (
+    pull_round_matchups, pull_3balls,
+    build_field_status_lookup, filter_stale_matchups,
+)
 from src.pipeline.pull_kalshi import (
     pull_kalshi_outrights, pull_kalshi_matchups,
     merge_kalshi_into_outrights, merge_kalshi_into_matchups,
@@ -292,7 +295,17 @@ def pull_live_edges(
 
     # Step 7: Round matchups and 3-balls (if requested)
     if include_matchups:
+        # Build a field-status lookup once so we can drop stale matchups
+        # (players already teed off, finished, cut, WD, or DQ).
+        field_lookup = build_field_status_lookup(tour=tour)
+        stats["field_players"] = len(field_lookup)
+
         round_matchups = pull_round_matchups(tournament_slug, tour)
+        if round_matchups:
+            before = len(round_matchups)
+            round_matchups = filter_stale_matchups(
+                round_matchups, field_lookup, n_players=2)
+            stats["matchups_dropped_stale"] = before - len(round_matchups)
         if round_matchups:
             # Merge Kalshi matchups if available
             if include_kalshi:
@@ -335,6 +348,11 @@ def pull_live_edges(
                 all_candidates.extend(edges)
 
         three_balls = pull_3balls(tournament_slug, tour)
+        if three_balls:
+            before = len(three_balls)
+            three_balls = filter_stale_matchups(
+                three_balls, field_lookup, n_players=3)
+            stats["3balls_dropped_stale"] = before - len(three_balls)
         if three_balls:
             edges = calculate_3ball_edges(
                 three_balls, bankroll=bankroll,
