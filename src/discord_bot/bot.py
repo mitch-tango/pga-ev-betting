@@ -80,7 +80,7 @@ def _render_candidates_image(candidates, title: str, arbs=None) -> str:
             name = f"{c.player_name.split(',')[0]} v {c.opponent_name.split(',')[0]}"
         else:
             name = c.player_name
-        name = name[:28]
+        name = name[:34]
 
         mkt = c.market_type
         if c.round_number:
@@ -88,11 +88,10 @@ def _render_candidates_image(candidates, title: str, arbs=None) -> str:
 
         qualifies = getattr(c, "qualifies", True)
         bet_min = getattr(c, "bet_min_edge", 0.0)
-        mark = "✓" if qualifies else "·"
         stake_str = f"${c.suggested_stake:.0f}" if qualifies else "—"
 
         cand_data.append([
-            mark, str(i), name, mkt[:8], c.best_book[:10],
+            str(i), name, mkt[:8], c.best_book[:10],
             c.best_odds_american,
             f"{c.your_prob*100:.1f}%", f"{c.best_implied_prob*100:.1f}%",
             f"{c.edge*100:.1f}%", f"{bet_min*100:.0f}%", stake_str,
@@ -110,11 +109,13 @@ def _render_candidates_image(candidates, title: str, arbs=None) -> str:
             warn = "*" if arb.settlement_warning else ""
             arb_data.append([
                 str(j), names[:28], arb.market_type[:8], legs[:20],
-                f"{arb.margin*100:.1f}%", f"${profit:.2f}", warn,
+                f"{arb.margin*100:.1f}%", f"${profit:.2f}{warn}",
             ])
 
-    cand_columns = ["", "#", "Player", "Market", "Book", "Odds", "Model", "Book%", "Edge", "Min", "Stake"]
-    arb_columns = ["#", "Players", "Market", "Books", "Margin", "Profit", ""]
+    cand_columns = ["#", "Player", "Market", "Book", "Odds", "Model", "Book%", "Edge", "Min", "Stake"]
+    cand_widths =  [0.04, 0.28,     0.08,     0.11,   0.08,   0.08,    0.08,    0.08,   0.06,  0.08]
+    arb_columns = ["#", "Players", "Market", "Books", "Margin", "Profit"]
+    arb_widths =  [0.04, 0.36,     0.10,     0.22,    0.12,     0.16]
 
     # Calculate figure height
     n_cand = max(len(cand_data), 1)  # at least 1 row for "no candidates" message
@@ -137,10 +138,14 @@ def _render_candidates_image(candidates, title: str, arbs=None) -> str:
 
     if cand_data:
         table = ax_cand.table(cellText=cand_data, colLabels=cand_columns,
+                              colWidths=cand_widths,
                               cellLoc='center', loc='center')
         table.auto_set_font_size(False)
         table.set_fontsize(8.5)
         table.scale(1, 1.35)
+
+        edge_col = cand_columns.index("Edge")
+        player_col = cand_columns.index("Player")
 
         for j in range(len(cand_columns)):
             table[0, j].set_facecolor('#2C3E50')
@@ -153,25 +158,23 @@ def _render_candidates_image(candidates, title: str, arbs=None) -> str:
 
             c = candidates[i - 1]
             qualifies = getattr(c, "qualifies", True)
-            edge_val = float(cand_data[i - 1][8].replace('%', ''))
+            edge_val = float(cand_data[i - 1][edge_col].replace('%', ''))
 
             if not qualifies:
                 # Sub-threshold: gold edge, dim the whole row so the user
                 # clearly sees they don't clear the placement bar.
-                table[i, 8].set_text_props(color='#F39C12', fontweight='bold')
-                table[i, 0].set_text_props(color='#95A5A6')
+                table[i, edge_col].set_text_props(color='#F39C12', fontweight='bold')
                 for j in range(len(cand_columns)):
-                    if j != 8:
+                    if j != edge_col:
                         table[i, j].set_text_props(color='#7F8C8D')
             else:
                 # Qualifies: green edge, deeper green for the high-alert tier.
                 color = '#1E8449' if edge_val >= config.ALERT_HIGH_EDGE_THRESHOLD * 100 else '#27AE60'
-                table[i, 8].set_text_props(color=color, fontweight='bold')
-                table[i, 0].set_text_props(color='#27AE60', fontweight='bold')
+                table[i, edge_col].set_text_props(color=color, fontweight='bold')
 
-            table[i, 2].set_text_props(ha='left')
-            table[i, 2]._loc = 'left'
-        table[0, 2]._loc = 'left'
+            table[i, player_col].set_text_props(ha='left')
+            table[i, player_col]._loc = 'left'
+        table[0, player_col]._loc = 'left'
     else:
         ax_cand.text(0.5, 0.4, "No +EV candidates above threshold",
                      ha='center', va='center', fontsize=12, color='#95A5A6',
@@ -185,6 +188,7 @@ def _render_candidates_image(candidates, title: str, arbs=None) -> str:
                          fontsize=11, fontweight='bold', pad=8, loc='left')
 
         arb_table = ax_arb.table(cellText=arb_data, colLabels=arb_columns,
+                                  colWidths=arb_widths,
                                   cellLoc='center', loc='center')
         arb_table.auto_set_font_size(False)
         arb_table.set_fontsize(8.5)
