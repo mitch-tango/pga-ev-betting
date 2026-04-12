@@ -72,6 +72,10 @@ class CandidateBet:
     correlation_haircut: float = 1.0
     suggested_stake: float = 0.0
 
+    # Placement threshold metadata (display vs. actionable)
+    bet_min_edge: float = 0.0      # market's MIN_EDGE at the time of scan
+    qualifies: bool = True         # True when edge >= bet_min_edge
+
     # All book odds
     all_book_odds: dict | None = None
 
@@ -150,6 +154,7 @@ def calculate_placement_edges(
     existing_bets: list[dict] | None = None,
     exchange_only: bool = False,
     win_outrights_data: list[dict] | dict | None = None,
+    display_min_edge: float | None = None,
 ) -> list[CandidateBet]:
     """Calculate +EV placement edges from outright odds data.
 
@@ -171,7 +176,9 @@ def calculate_placement_edges(
         List of CandidateBet sorted by edge descending
     """
     existing_bets = existing_bets or []
-    min_edge = config.MIN_EDGE.get(market_type, 0.03)
+    bet_min_edge = config.MIN_EDGE.get(market_type, 0.03)
+    effective_floor = (display_min_edge if display_min_edge is not None
+                       else bet_min_edge)
     candidates = []
 
     # The outrights endpoint returns a list of player records
@@ -355,20 +362,24 @@ def calculate_placement_edges(
         if best_adjusted_edge <= 0 or best_decimal is None:
             continue
 
-        if best_adjusted_edge < min_edge:
+        if best_adjusted_edge < effective_floor:
             continue
+
+        qualifies = best_adjusted_edge >= bet_min_edge
 
         # Correlation haircut
         haircut = get_correlation_haircut(player_name, existing_bets)
 
-        # Kelly sizing
-        stake = kelly_stake(
-            best_adjusted_edge, best_decimal, bankroll,
-            correlation_haircut=haircut,
-        )
-
-        if stake < 1:
-            continue
+        # Kelly sizing (only for candidates that clear the bet threshold)
+        if qualifies:
+            stake = kelly_stake(
+                best_adjusted_edge, best_decimal, bankroll,
+                correlation_haircut=haircut,
+            )
+            if stake < 1:
+                continue
+        else:
+            stake = 0.0
 
         candidates.append(CandidateBet(
             market_type=market_type,
@@ -390,6 +401,8 @@ def calculate_placement_edges(
             suggested_stake=stake,
             all_book_odds=all_odds if all_odds else None,
             tranche=player_tranche,
+            bet_min_edge=bet_min_edge,
+            qualifies=qualifies,
         ))
 
     # Sort by edge descending
@@ -434,6 +447,7 @@ def calculate_matchup_edges(
     existing_bets: list[dict] | None = None,
     market_type: str = "tournament_matchup",
     outrights_data: list[dict] | dict | None = None,
+    display_min_edge: float | None = None,
 ) -> list[CandidateBet]:
     """Calculate +EV edges from matchup odds data.
 
@@ -451,7 +465,9 @@ def calculate_matchup_edges(
         List of CandidateBet sorted by edge descending
     """
     existing_bets = existing_bets or []
-    min_edge = config.MIN_EDGE.get(market_type, 0.05)
+    bet_min_edge = config.MIN_EDGE.get(market_type, 0.05)
+    effective_floor = (display_min_edge if display_min_edge is not None
+                       else bet_min_edge)
     candidates = []
 
     # Build player win-prob lookup for tranche classification
@@ -550,15 +566,19 @@ def calculate_matchup_edges(
                     best_book_prob = book_prob
                     best_decimal = decimal_odds
 
-            if best_edge < min_edge or best_decimal is None or best_decimal <= 1:
+            if best_edge < effective_floor or best_decimal is None or best_decimal <= 1:
                 continue
 
+            qualifies = best_edge >= bet_min_edge
             haircut = get_correlation_haircut(player_name, existing_bets)
-            stake = kelly_stake(best_edge, best_decimal, bankroll,
-                                correlation_haircut=haircut)
 
-            if stake < 1:
-                continue
+            if qualifies:
+                stake = kelly_stake(best_edge, best_decimal, bankroll,
+                                    correlation_haircut=haircut)
+                if stake < 1:
+                    continue
+            else:
+                stake = 0.0
 
             display_odds = {b: d.get(odds_key) for b, d in all_book_odds.items()}
 
@@ -585,6 +605,8 @@ def calculate_matchup_edges(
                 suggested_stake=stake,
                 all_book_odds=display_odds,
                 tranche=tranche,
+                bet_min_edge=bet_min_edge,
+                qualifies=qualifies,
             ))
 
     candidates.sort(key=lambda c: c.edge, reverse=True)
@@ -596,6 +618,7 @@ def calculate_3ball_edges(
     bankroll: float = 1000.0,
     existing_bets: list[dict] | None = None,
     round_number: int | None = None,
+    display_min_edge: float | None = None,
 ) -> list[CandidateBet]:
     """Calculate +EV edges from 3-ball odds data.
 
@@ -610,7 +633,9 @@ def calculate_3ball_edges(
         List of CandidateBet sorted by edge descending
     """
     existing_bets = existing_bets or []
-    min_edge = config.MIN_EDGE.get("3_ball", 0.05)
+    bet_min_edge = config.MIN_EDGE.get("3_ball", 0.05)
+    effective_floor = (display_min_edge if display_min_edge is not None
+                       else bet_min_edge)
     candidates = []
 
     for group in three_ball_data:
@@ -699,18 +724,22 @@ def calculate_3ball_edges(
                     best_book_prob = bp
                     best_decimal = dec
 
-            if best_edge < min_edge:
+            if best_edge < effective_floor:
                 continue
+
+            qualifies = best_edge >= bet_min_edge
 
             # Other two players are opponents
             opps = [p for j, p in enumerate(players) if j != idx]
 
             haircut = get_correlation_haircut(player["name"], existing_bets)
-            stake = kelly_stake(best_edge, best_decimal, bankroll,
-                                correlation_haircut=haircut)
-
-            if stake < 1:
-                continue
+            if qualifies:
+                stake = kelly_stake(best_edge, best_decimal, bankroll,
+                                    correlation_haircut=haircut)
+                if stake < 1:
+                    continue
+            else:
+                stake = 0.0
 
             display_odds = {b: d["decimal"][idx] for b, d in all_book_data.items()}
 
@@ -738,6 +767,8 @@ def calculate_3ball_edges(
                 correlation_haircut=haircut,
                 suggested_stake=stake,
                 all_book_odds=display_odds,
+                bet_min_edge=bet_min_edge,
+                qualifies=qualifies,
             ))
 
     candidates.sort(key=lambda c: c.edge, reverse=True)

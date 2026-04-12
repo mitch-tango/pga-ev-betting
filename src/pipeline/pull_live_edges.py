@@ -284,6 +284,7 @@ def pull_live_edges(
             ],
             exchange_only=True,
             win_outrights_data=outrights.get("win"),
+            display_min_edge=config.DISPLAY_MIN_EDGE,
         )
         if edges:
             stats[f"{our_market}_edges"] = len(edges)
@@ -325,6 +326,7 @@ def pull_live_edges(
                     for c in all_candidates
                 ],
                 market_type="round_matchup",
+                display_min_edge=config.DISPLAY_MIN_EDGE,
             )
             for e in edges:
                 e.round_number = round_number
@@ -342,6 +344,7 @@ def pull_live_edges(
                     for c in all_candidates
                 ],
                 round_number=round_number,
+                display_min_edge=config.DISPLAY_MIN_EDGE,
             )
             if edges:
                 stats["3ball_edges"] = len(edges)

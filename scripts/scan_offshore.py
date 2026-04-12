@@ -249,10 +249,19 @@ def find_in_lookup(name: str, lookup: dict) -> dict | None:
 
 # ── Matchup Edge Calculation ────────────────────────────────────────────
 
+DISPLAY_MIN_EDGE = config.DISPLAY_MIN_EDGE
+
+# ANSI color codes for terminal output
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
+
 def scan_matchups(offshore_matchups, dg_matchup_lookup, dg_win_lookup, bankroll):
     """Scan offshore matchups for edges."""
     results = []
-    min_edge = config.MIN_EDGE.get("tournament_matchup", 0.05)
+    bet_min_edge = config.MIN_EDGE.get("tournament_matchup", 0.05)
 
     for mu in offshore_matchups:
         p1_name = mu["p1_name"]
@@ -350,16 +359,14 @@ def scan_matchups(offshore_matchups, dg_matchup_lookup, dg_win_lookup, bankroll)
             if not off_fair or off_fair <= 0:
                 continue
             edge = your_prob - off_fair
-            if edge < min_edge:
+            if edge < DISPLAY_MIN_EDGE:
                 continue
 
             dec = american_to_decimal(off_odds_str)
             if not dec or dec <= 1:
                 continue
 
-            stake = kelly_stake(edge, dec, bankroll)
-            if stake < 1:
-                continue
+            stake = kelly_stake(edge, dec, bankroll) if edge >= bet_min_edge else 0.0
 
             results.append({
                 "player": side_name,
@@ -372,6 +379,8 @@ def scan_matchups(offshore_matchups, dg_matchup_lookup, dg_win_lookup, bankroll)
                 "your_prob": your_prob,
                 "book_consensus": book_consensus_p1 if side_name == p1_name else (1 - book_consensus_p1 if book_consensus_p1 else None),
                 "edge": edge,
+                "bet_min_edge": bet_min_edge,
+                "qualifies": edge >= bet_min_edge,
                 "kelly_stake": stake,
                 "tranche": tranche,
             })
@@ -386,7 +395,7 @@ def scan_placement(offshore_players, market_type, dg_lookup, dg_win_lookup, bank
                     mc_expected=None):
     """Scan offshore placement odds for edges."""
     results = []
-    min_edge = config.MIN_EDGE.get(market_type, 0.05)
+    bet_min_edge = config.MIN_EDGE.get(market_type, 0.05)
 
     # Map our market types to DG expected finishers
     expected_map = {"t10": 10, "t20": 20, "t30": 30, "t40": 40, "win": 1}
@@ -465,12 +474,10 @@ def scan_placement(offshore_players, market_type, dg_lookup, dg_win_lookup, bank
             adj_edge = raw_edge
             dh_adj = 0.0
 
-        if adj_edge < min_edge:
+        if adj_edge < DISPLAY_MIN_EDGE:
             continue
 
-        stake = kelly_stake(adj_edge, off_decimal, bankroll)
-        if stake < 1:
-            continue
+        stake = kelly_stake(adj_edge, off_decimal, bankroll) if adj_edge >= bet_min_edge else 0.0
 
         results.append({
             "player": name,
@@ -485,6 +492,8 @@ def scan_placement(offshore_players, market_type, dg_lookup, dg_win_lookup, bank
             "edge": adj_edge,
             "raw_edge": raw_edge,
             "dh_adj": dh_adj,
+            "bet_min_edge": bet_min_edge,
+            "qualifies": adj_edge >= bet_min_edge,
             "kelly_stake": stake,
             "tranche": tranche,
         })
@@ -590,33 +599,43 @@ def main():
                 all_results.extend(placement_results)
 
     # ── Display results ──
-    print(f"\n{'='*80}")
+    print(f"\n{'='*94}")
     print(f"  OFFSHORE SPORTSBOOK SCAN — THE MASTERS 2026")
-    print(f"  Bankroll: ${bankroll:.0f} | Min edges: matchup {config.MIN_EDGE['tournament_matchup']*100:.0f}%, "
-          f"placement {config.MIN_EDGE.get('t10', 0.06)*100:.0f}%")
-    print(f"{'='*80}")
+    print(f"  Bankroll: ${bankroll:.0f} | Display floor: {DISPLAY_MIN_EDGE*100:.0f}% edge")
+    print(f"  Bet thresholds: " + ", ".join(
+        f"{k}={v*100:.0f}%" for k, v in config.MIN_EDGE.items()
+    ))
+    print(f"  ✓ = edge clears bet threshold (size via Kelly) · · = below threshold (info only)")
+    print(f"{'='*94}")
 
     if not all_results:
-        print("\n  No +EV opportunities found above threshold.")
+        print("\n  No +EV opportunities found above 1% edge.")
         return
 
     all_results.sort(key=lambda r: r["edge"], reverse=True)
 
-    print(f"\n  {len(all_results)} +EV opportunities found:\n")
-    print(f"  {'#':>3}  {'Player':<22} {'vs':<16} {'Market':<8} "
-          f"{'Odds':>7} {'Your%':>6} {'Off%':>6} {'Edge':>6} "
+    qualifying = sum(1 for r in all_results if r.get("qualifies"))
+    print(f"\n  {len(all_results)} +EV opportunities (≥1% edge); {qualifying} clear bet threshold:\n")
+    print(f"  {'':<2} {'#':>3}  {'Player':<22} {'vs':<16} {'Market':<8} "
+          f"{'Odds':>7} {'Your%':>6} {'Off%':>6} {'Edge':>6} {'Min':>5} "
           f"{'Stake':>6} {'Tranche':<8}")
-    print(f"  {'—'*3}  {'—'*22} {'—'*16} {'—'*8} {'—'*7} {'—'*6} {'—'*6} "
-          f"{'—'*6} {'—'*6} {'—'*8}")
+    print(f"  {'—'*2} {'—'*3}  {'—'*22} {'—'*16} {'—'*8} {'—'*7} {'—'*6} {'—'*6} "
+          f"{'—'*6} {'—'*5} {'—'*6} {'—'*8}")
 
     for i, r in enumerate(all_results, 1):
         opp = r.get("opponent") or ""
         opp_display = opp[:16] if opp else "—"
         tranche = r.get("tranche") or "—"
-        print(f"  {i:>3}  {r['player']:<22} {opp_display:<16} {r['market']:<8} "
+        qualifies = r.get("qualifies", False)
+        mark = f"{GREEN}✓{RESET}" if qualifies else f"{DIM}·{RESET}"
+        bet_min = r.get("bet_min_edge", 0) * 100
+        stake_str = f"${r['kelly_stake']:>4.0f}" if qualifies else "   —"
+        edge_color = GREEN if qualifies else YELLOW
+        edge_str = f"{edge_color}{r['edge']*100:>5.1f}%{RESET}"
+        print(f"  {mark}  {i:>3}  {r['player']:<22} {opp_display:<16} {r['market']:<8} "
               f"{r['offshore_odds']:>7} {r['your_prob']*100:>5.1f}% "
-              f"{r['offshore_implied']*100:>5.1f}% {r['edge']*100:>5.1f}% "
-              f"${r['kelly_stake']:>4.0f} {tranche:<8}")
+              f"{r['offshore_implied']*100:>5.1f}% {edge_str} "
+              f"{bet_min:>4.0f}% {stake_str:>6} {tranche:<8}")
 
 
 if __name__ == "__main__":

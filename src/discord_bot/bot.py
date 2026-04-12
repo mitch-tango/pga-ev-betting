@@ -58,7 +58,153 @@ from src.core.arb import (
 from src.core.settlement import settle_placement_bet
 import config
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import tempfile
+
 log = logging.getLogger("pga-ev-bot")
+
+
+def _render_candidates_image(candidates, title: str, arbs=None) -> str:
+    """Render candidate bets (and optional arbs) as a PNG table image.
+
+    Returns the path to the saved PNG file.
+    """
+    # Build candidate table data
+    cand_data = []
+    for i, c in enumerate(candidates, 1):
+        if c.opponent_name:
+            name = f"{c.player_name.split(',')[0]} v {c.opponent_name.split(',')[0]}"
+        else:
+            name = c.player_name
+        name = name[:28]
+
+        mkt = c.market_type
+        if c.round_number:
+            mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
+
+        qualifies = getattr(c, "qualifies", True)
+        bet_min = getattr(c, "bet_min_edge", 0.0)
+        mark = "✓" if qualifies else "·"
+        stake_str = f"${c.suggested_stake:.0f}" if qualifies else "—"
+
+        cand_data.append([
+            mark, str(i), name, mkt[:8], c.best_book[:10],
+            c.best_odds_american,
+            f"{c.your_prob*100:.1f}%", f"{c.best_implied_prob*100:.1f}%",
+            f"{c.edge*100:.1f}%", f"{bet_min*100:.0f}%", stake_str,
+        ])
+
+    # Build arb table data
+    arb_data = []
+    if arbs:
+        for j, arb in enumerate(arbs, 1):
+            size_arb(arb, config.ARB_DEFAULT_RETURN)
+            total_outlay = sum(leg.stake for leg in arb.legs)
+            profit = config.ARB_DEFAULT_RETURN - total_outlay
+            names = " v ".join(leg.player.split(",")[0][:14] for leg in arb.legs)
+            legs = " / ".join(f"{leg.book[:8]}" for leg in arb.legs)
+            warn = "*" if arb.settlement_warning else ""
+            arb_data.append([
+                str(j), names[:28], arb.market_type[:8], legs[:20],
+                f"{arb.margin*100:.1f}%", f"${profit:.2f}", warn,
+            ])
+
+    cand_columns = ["", "#", "Player", "Market", "Book", "Odds", "Model", "Book%", "Edge", "Min", "Stake"]
+    arb_columns = ["#", "Players", "Market", "Books", "Margin", "Profit", ""]
+
+    # Calculate figure height
+    n_cand = max(len(cand_data), 1)  # at least 1 row for "no candidates" message
+    n_arb = len(arb_data)
+    total_rows = n_cand + (n_arb + 2 if n_arb else 0)  # +2 for arb header gap
+    fig_height = max(3, total_rows * 0.42 + 1.5)
+
+    fig, axes = plt.subplots(
+        nrows=2 if arb_data else 1, ncols=1,
+        figsize=(10, fig_height),
+        gridspec_kw={'height_ratios': [n_cand, n_arb + 1] if arb_data else [1]},
+    )
+    if not arb_data:
+        axes = [axes]
+
+    # --- Candidates table ---
+    ax_cand = axes[0]
+    ax_cand.axis('off')
+    ax_cand.set_title(title, fontsize=13, fontweight='bold', pad=12, loc='left')
+
+    if cand_data:
+        table = ax_cand.table(cellText=cand_data, colLabels=cand_columns,
+                              cellLoc='center', loc='center')
+        table.auto_set_font_size(False)
+        table.set_fontsize(8.5)
+        table.scale(1, 1.35)
+
+        for j in range(len(cand_columns)):
+            table[0, j].set_facecolor('#2C3E50')
+            table[0, j].set_text_props(color='white', fontweight='bold')
+
+        for i in range(1, len(cand_data) + 1):
+            bg = '#F8F9FA' if i % 2 == 0 else 'white'
+            for j in range(len(cand_columns)):
+                table[i, j].set_facecolor(bg)
+
+            c = candidates[i - 1]
+            qualifies = getattr(c, "qualifies", True)
+            edge_val = float(cand_data[i - 1][8].replace('%', ''))
+
+            if not qualifies:
+                # Sub-threshold: gold edge, dim the whole row so the user
+                # clearly sees they don't clear the placement bar.
+                table[i, 8].set_text_props(color='#F39C12', fontweight='bold')
+                table[i, 0].set_text_props(color='#95A5A6')
+                for j in range(len(cand_columns)):
+                    if j != 8:
+                        table[i, j].set_text_props(color='#7F8C8D')
+            else:
+                # Qualifies: green edge, deeper green for the high-alert tier.
+                color = '#1E8449' if edge_val >= config.ALERT_HIGH_EDGE_THRESHOLD * 100 else '#27AE60'
+                table[i, 8].set_text_props(color=color, fontweight='bold')
+                table[i, 0].set_text_props(color='#27AE60', fontweight='bold')
+
+            table[i, 2].set_text_props(ha='left')
+            table[i, 2]._loc = 'left'
+        table[0, 2]._loc = 'left'
+    else:
+        ax_cand.text(0.5, 0.4, "No +EV candidates above threshold",
+                     ha='center', va='center', fontsize=12, color='#95A5A6',
+                     transform=ax_cand.transAxes)
+
+    # --- Arbs table ---
+    if arb_data:
+        ax_arb = axes[1]
+        ax_arb.axis('off')
+        ax_arb.set_title(f"{len(arb_data)} Arbitrage Opportunities",
+                         fontsize=11, fontweight='bold', pad=8, loc='left')
+
+        arb_table = ax_arb.table(cellText=arb_data, colLabels=arb_columns,
+                                  cellLoc='center', loc='center')
+        arb_table.auto_set_font_size(False)
+        arb_table.set_fontsize(8.5)
+        arb_table.scale(1, 1.35)
+
+        for j in range(len(arb_columns)):
+            arb_table[0, j].set_facecolor('#8E44AD')
+            arb_table[0, j].set_text_props(color='white', fontweight='bold')
+
+        for i in range(1, len(arb_data) + 1):
+            bg = '#F8F9FA' if i % 2 == 0 else 'white'
+            for j in range(len(arb_columns)):
+                arb_table[i, j].set_facecolor(bg)
+            arb_table[i, 1].set_text_props(ha='left')
+            arb_table[i, 1]._loc = 'left'
+        arb_table[0, 1]._loc = 'left'
+
+    plt.tight_layout()
+    path = tempfile.mktemp(suffix='.png', prefix='ev_scan_')
+    plt.savefig(path, dpi=150, bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close(fig)
+    return path
 
 # Market type mapping from DG API names to internal names
 MARKET_MAP = {
@@ -113,23 +259,60 @@ class EVBot(discord.Client):
         await self.wait_until_ready()
         log.info("Alert scheduler started")
 
+        # Track which scheduled tasks have fired today to prevent duplicates
+        # and enable catch-up on restart
+        fired_today: set[str] = set()  # e.g. {"preround_2026-04-11", "settlement_2026-04-11"}
+
+        # Catch-up: if we start after the pre-round hour on a tournament day,
+        # fire the scan immediately
+        now_et = datetime.now(ET)
+        weekday = now_et.weekday()
+        if (weekday in (3, 4, 5, 6)
+                and now_et.hour > config.ALERT_PREROUND_HOUR
+                and now_et.hour < config.LIVE_MONITOR_END_HOUR):
+            date_key = f"preround_{now_et.date()}"
+            log.info("Catch-up: missed pre-round scan, running now")
+            round_number = weekday - 2
+            await self._run_and_alert("preround", round_number=round_number)
+            fired_today.add(date_key)
+
         while not self.is_closed():
             now_et = datetime.now(ET)
             weekday = now_et.weekday()  # 0=Mon … 6=Sun
+            today = str(now_et.date())
 
             # Wednesday 6 PM ET → pre-tournament scan
             if weekday == 2 and now_et.hour == config.ALERT_PRETOURNAMENT_HOUR:
-                await self._run_and_alert("pretournament")
+                key = f"pretournament_{today}"
+                if key not in fired_today:
+                    await self._run_and_alert("pretournament")
+                    fired_today.add(key)
 
             # Thu(3)-Sun(6) at configured hour → pre-round scan
             if weekday in (3, 4, 5, 6) and now_et.hour == config.ALERT_PREROUND_HOUR:
-                round_number = weekday - 2  # Thu=R1, Fri=R2, Sat=R3, Sun=R4
-                await self._run_and_alert("preround", round_number=round_number)
+                key = f"preround_{today}"
+                if key not in fired_today:
+                    round_number = weekday - 2  # Thu=R1, Fri=R2, Sat=R3, Sun=R4
+                    await self._run_and_alert("preround", round_number=round_number)
+                    fired_today.add(key)
+
+            # Thu(3)-Sun(6) at 10 PM ET → auto-settlement
+            if weekday in (3, 4, 5, 6) and now_et.hour == config.ALERT_SETTLEMENT_HOUR:
+                key = f"settlement_{today}"
+                if key not in fired_today:
+                    await self._run_scheduled_settlement()
+                    fired_today.add(key)
 
             # Sunday 8 PM ET → post-tournament summary
             if weekday == 6 and now_et.hour == 20:
-                if self.last_scan_tournament_id:
-                    await self._post_tournament_summary(self.last_scan_tournament_id)
+                key = f"summary_{today}"
+                if key not in fired_today:
+                    if self.last_scan_tournament_id:
+                        await self._post_tournament_summary(self.last_scan_tournament_id)
+                    fired_today.add(key)
+
+            # Clear old keys at midnight
+            fired_today = {k for k in fired_today if today in k}
 
             # Sleep until the next hour boundary + 1 min buffer
             now_et = datetime.now(ET)
@@ -196,17 +379,22 @@ class EVBot(discord.Client):
             return
 
         # Build the alert embed
-        high_edge = [c for c in candidates if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
-        color = 0xE74C3C if high_edge else 0xE67E22
+        qualifying = [c for c in candidates if getattr(c, "qualifies", True)]
+        sub_threshold = len(candidates) - len(qualifying)
+        high_edge = [c for c in qualifying if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
+        color = 0xE74C3C if high_edge else (0xE67E22 if qualifying else 0x95A5A6)
 
         weekly_limit = bankroll * config.MAX_WEEKLY_EXPOSURE_PCT
         tourn_limit = bankroll * config.MAX_TOURNAMENT_EXPOSURE_PCT
 
+        sub_text = f", {sub_threshold} info-only" if sub_threshold else ""
         embed = discord.Embed(
             title=f"Scheduled Scan — {tournament_name}",
             description=(
-                f"**{len(candidates)}** candidates found"
-                f" ({len(high_edge)} high-edge)\n"
+                f"**{len(qualifying)}** bet-threshold candidates"
+                f" ({len(high_edge)} high-edge{sub_text})\n"
+                f"✓ clears market min edge · sub-threshold shown ≥"
+                f"{config.DISPLAY_MIN_EDGE*100:.0f}% for visibility\n"
                 f"Bankroll: ${bankroll:,.2f} | "
                 f"Weekly: ${weekly_exp:,.0f}/${weekly_limit:,.0f} | "
                 f"Tournament: ${tourn_exp:,.0f}/${tourn_limit:,.0f}"
@@ -215,39 +403,13 @@ class EVBot(discord.Client):
             timestamp=datetime.now(),
         )
 
-        lines = []
-        lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
-        for i, c in enumerate(candidates, 1):
-            if c.opponent_name:
-                name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
-            else:
-                name = c.player_name[:20]
-
-            mkt = c.market_type
-            if c.round_number:
-                mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
-
-            flag = " **" if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD else ""
-            lines.append(
-                f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
-                f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
-                f"{flag}"
-            )
-
-            if len("\n".join(lines)) > 900:
-                embed.add_field(
-                    name="Candidates" if len(embed.fields) == 0 else "\u200b",
-                    value=f"```\n" + "\n".join(lines) + "\n```",
-                    inline=False,
-                )
-                lines = []
-
-        if lines:
-            embed.add_field(
-                name="Candidates" if len(embed.fields) == 0 else "\u200b",
-                value=f"```\n" + "\n".join(lines) + "\n```",
-                inline=False,
-            )
+        # Render candidates as image
+        img_path = await asyncio.to_thread(
+            _render_candidates_image, candidates,
+            f"Scheduled Scan — {tournament_name}", arbs,
+        )
+        img_file = discord.File(img_path, filename="scan_results.png")
+        embed.set_image(url="attachment://scan_results.png")
 
         # Arbitrage section
         if arbs:
@@ -282,11 +444,14 @@ class EVBot(discord.Client):
         if high_edge and config.DISCORD_ALERT_ROLE_ID:
             mention = f"<@&{config.DISCORD_ALERT_ROLE_ID}> "
 
-        await channel.send(content=f"{mention}{len(high_edge)} high-edge bet(s) found!" if mention else None, embed=embed)
+        await channel.send(
+            content=f"{mention}{len(high_edge)} high-edge bet(s) found!" if mention else None,
+            embed=embed, file=img_file,
+        )
 
-        # Track for edge-gone re-check
+        # Track for edge-gone re-check (qualifying candidates only)
         now = datetime.now()
-        for c in candidates:
+        for c in qualifying:
             self._alerted_candidates.append((c, channel.id, now))
 
     # ------------------------------------------------------------------
@@ -409,6 +574,73 @@ class EVBot(discord.Client):
         log.info("Posted tournament summary for %s", tournament_id)
 
     # ------------------------------------------------------------------
+    # Scheduled settlement
+    # ------------------------------------------------------------------
+    async def _run_scheduled_settlement(self, channel=None):
+        """Run auto-settlement and post results to alert channel."""
+        if channel is None:
+            channel = self.get_channel(config.DISCORD_ALERT_CHANNEL_ID)
+        if not channel:
+            return
+
+        log.info("Running scheduled settlement")
+        try:
+            result = await asyncio.to_thread(
+                _run_settlement, self.last_scan_tournament_id, "pga"
+            )
+        except Exception as e:
+            log.error("Scheduled settlement failed: %s", e)
+            await channel.send(f"Scheduled settlement failed: {e}")
+            return
+
+        bets, settled, skipped, total_pnl, bankroll = result
+
+        if not bets:
+            await channel.send(
+                embed=discord.Embed(
+                    title="Scheduled Settlement",
+                    description="No unsettled bets found.",
+                    color=0x95A5A6,
+                    timestamp=datetime.now(),
+                )
+            )
+            return
+
+        embed = discord.Embed(
+            title="Scheduled Settlement",
+            color=0x2ECC71 if total_pnl >= 0 else 0xE74C3C,
+            timestamp=datetime.now(),
+        )
+        embed.add_field(name="Settled", value=str(len(settled)), inline=True)
+        embed.add_field(name="Skipped", value=str(skipped), inline=True)
+        embed.add_field(name="Session P&L", value=f"${total_pnl:+,.2f}", inline=True)
+        embed.add_field(name="Bankroll", value=f"${bankroll:,.2f}", inline=False)
+
+        if settled:
+            lines = []
+            for s in settled:
+                emoji = "+" if s["pnl"] >= 0 else "-"
+                name = s["player"][:18]
+                lines.append(
+                    f"[{emoji}] {name:<18} {s['outcome']:<5} "
+                    f"${s['pnl']:>+7,.0f} {s['rule']}"
+                )
+            embed.add_field(
+                name="Details",
+                value=f"```\n" + "\n".join(lines) + "\n```",
+                inline=False,
+            )
+
+        await channel.send(embed=embed)
+        log.info("Settlement: %d settled, %d skipped, P&L $%.2f",
+                 len(settled), skipped, total_pnl)
+
+        # Trigger tournament summary if all bets now settled
+        tid = self.last_scan_tournament_id
+        if tid:
+            await self._post_tournament_summary(tid, channel=channel)
+
+    # ------------------------------------------------------------------
     # Live round monitoring
     # ------------------------------------------------------------------
     async def start_live_monitor(self, channel=None, tour: str = "pga",
@@ -468,16 +700,20 @@ class EVBot(discord.Client):
                 await asyncio.sleep(interval)
                 continue
 
-            # Filter to only new candidates (avoid re-alerting same bet)
-            new_candidates = []
+            # Suppress alert unless a *qualifying* (bet-threshold) edge is new.
+            # Sub-threshold rows are still shown in the image for context, but
+            # don't fire new alerts.
+            new_qualifying = []
             for c in candidates:
+                if not getattr(c, "qualifies", True):
+                    continue
                 key = f"{c.player_name}|{c.market_type}|{c.best_book}"
                 if key not in self._live_alerted_keys:
                     self._live_alerted_keys.add(key)
-                    new_candidates.append(c)
+                    new_qualifying.append(c)
 
-            if not new_candidates:
-                log.info("Live monitor: %d edges but all previously alerted", len(candidates))
+            if not new_qualifying:
+                log.info("Live monitor: %d edges but no new qualifying ones", len(candidates))
                 await asyncio.sleep(interval)
                 continue
 
@@ -487,13 +723,18 @@ class EVBot(discord.Client):
             self.last_scan_time = datetime.now()
 
             # Build alert embed
-            high_edge = [c for c in new_candidates if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
+            high_edge = [c for c in new_qualifying if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
+            sub_threshold = sum(1 for c in candidates if not getattr(c, "qualifies", True))
             color = 0xE74C3C if high_edge else 0xF39C12
 
+            sub_text = f", {sub_threshold} info-only" if sub_threshold else ""
             embed = discord.Embed(
                 title=f"LIVE Edge Alert — {tournament_name}",
                 description=(
-                    f"**{len(new_candidates)}** new live edge(s) detected\n"
+                    f"**{len(new_qualifying)}** new bet-threshold edge(s)"
+                    f" ({len(high_edge)} high-edge{sub_text})\n"
+                    f"✓ clears market min edge · sub-threshold shown ≥"
+                    f"{config.DISPLAY_MIN_EDGE*100:.0f}% for visibility\n"
                     f"DG live model: {stats.get('live_players', '?')} players | "
                     f"Matched: {stats.get('matched', '?')}\n"
                     f"Bankroll: ${stats.get('bankroll', 0):,.2f}"
@@ -502,37 +743,13 @@ class EVBot(discord.Client):
                 timestamp=datetime.now(),
             )
 
-            lines = []
-            lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
-            for i, c in enumerate(new_candidates, 1):
-                if c.opponent_name:
-                    name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
-                else:
-                    name = c.player_name[:20]
-
-                mkt = c.market_type
-                if c.round_number:
-                    mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
-
-                lines.append(
-                    f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
-                    f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
-                )
-
-                if len("\n".join(lines)) > 900:
-                    embed.add_field(
-                        name="Live Edges" if len(embed.fields) == 0 else "\u200b",
-                        value=f"```\n" + "\n".join(lines) + "\n```",
-                        inline=False,
-                    )
-                    lines = []
-
-            if lines:
-                embed.add_field(
-                    name="Live Edges" if len(embed.fields) == 0 else "\u200b",
-                    value=f"```\n" + "\n".join(lines) + "\n```",
-                    inline=False,
-                )
+            # Render full candidate set (qualifying + sub-threshold) as image
+            img_path = await asyncio.to_thread(
+                _render_candidates_image, candidates,
+                f"LIVE Edge Alert — {tournament_name}",
+            )
+            img_file = discord.File(img_path, filename="live_edges.png")
+            embed.set_image(url="attachment://live_edges.png")
 
             embed.set_footer(text=f"Use /place <number> to log | Next check in {config.LIVE_MONITOR_INTERVAL_MIN}min")
 
@@ -541,8 +758,8 @@ class EVBot(discord.Client):
                 mention = f"<@&{config.DISCORD_ALERT_ROLE_ID}> "
 
             await channel.send(
-                content=f"{mention}LIVE: {len(new_candidates)} new edge(s)!" if mention else None,
-                embed=embed,
+                content=f"{mention}LIVE: {len(new_qualifying)} new edge(s)!" if mention else None,
+                embed=embed, file=img_file,
             )
 
             await asyncio.sleep(interval)
@@ -699,11 +916,19 @@ async def cmd_monitor(
         bot.last_scan_tournament_id = stats.get("tournament_id")
         bot.last_scan_time = datetime.now()
 
+        qualifying = [c for c in candidates if getattr(c, "qualifies", True)]
+        sub_threshold = len(candidates) - len(qualifying)
+        high_edge = [c for c in qualifying if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
+
         bankroll = stats.get("bankroll", 0)
+        sub_text = f", {sub_threshold} info-only" if sub_threshold else ""
         embed = discord.Embed(
             title=f"Live Scan — {tournament_name}",
             description=(
-                f"**{len(candidates)}** live edges found\n"
+                f"**{len(qualifying)}** bet-threshold edges"
+                f" ({len(high_edge)} high-edge{sub_text})\n"
+                f"✓ clears market min edge · sub-threshold shown ≥"
+                f"{config.DISPLAY_MIN_EDGE*100:.0f}% for visibility\n"
                 f"DG live: {stats.get('live_players', 0)} players | "
                 f"Matched: {stats.get('matched', 0)} | "
                 f"Bankroll: ${bankroll:,.2f}"
@@ -712,40 +937,15 @@ async def cmd_monitor(
             timestamp=datetime.now(),
         )
 
-        lines = []
-        lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
-        for i, c in enumerate(candidates, 1):
-            if c.opponent_name:
-                name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
-            else:
-                name = c.player_name[:20]
-
-            mkt = c.market_type
-            if c.round_number:
-                mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
-
-            lines.append(
-                f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
-                f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
-            )
-
-            if len("\n".join(lines)) > 900:
-                embed.add_field(
-                    name="Live Edges" if len(embed.fields) == 0 else "\u200b",
-                    value=f"```\n" + "\n".join(lines) + "\n```",
-                    inline=False,
-                )
-                lines = []
-
-        if lines:
-            embed.add_field(
-                name="Live Edges" if len(embed.fields) == 0 else "\u200b",
-                value=f"```\n" + "\n".join(lines) + "\n```",
-                inline=False,
-            )
+        img_path = await asyncio.to_thread(
+            _render_candidates_image, candidates,
+            f"Live Scan — {tournament_name}",
+        )
+        img_file = discord.File(img_path, filename="live_scan.png")
+        embed.set_image(url="attachment://live_scan.png")
 
         embed.set_footer(text="Use /place <number> to log a bet | VERIFY ODDS BEFORE PLACING")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, file=img_file)
 
 
 # ---------------------------------------------------------------------------
@@ -964,9 +1164,21 @@ async def cmd_scan(
     weekly_limit = bankroll * config.MAX_WEEKLY_EXPOSURE_PCT
     tourn_limit = bankroll * config.MAX_TOURNAMENT_EXPOSURE_PCT
 
+    qualifying = [c for c in candidates if getattr(c, "qualifies", True)]
+    sub_threshold = len(candidates) - len(qualifying)
+    high_edge = [c for c in qualifying if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
+
     desc_parts = []
     if candidates:
-        desc_parts.append(f"**{len(candidates)}** +EV candidates")
+        sub_text = f", {sub_threshold} info-only" if sub_threshold else ""
+        desc_parts.append(
+            f"**{len(qualifying)}** bet-threshold candidates"
+            f" ({len(high_edge)} high-edge{sub_text})"
+        )
+        desc_parts.append(
+            f"✓ clears market min edge · sub-threshold shown ≥"
+            f"{config.DISPLAY_MIN_EDGE*100:.0f}% for visibility"
+        )
     if arbs:
         desc_parts.append(f"**{len(arbs)}** arb(s)")
     desc_parts.append(
@@ -982,69 +1194,17 @@ async def cmd_scan(
         timestamp=datetime.now(),
     )
 
-    # Format candidates table (Discord has 1024 char limit per field)
-    if candidates:
-        lines = []
-        lines.append(f"{'#':>2} {'Player':<20} {'Mkt':<6} {'Book':<10} {'Odds':>6} {'Edge':>5} {'Stake':>5}")
-        for i, c in enumerate(candidates, 1):
-            if c.opponent_name:
-                name = f"{c.player_name[:9]}v{c.opponent_name[:9]}"
-            else:
-                name = c.player_name[:20]
-
-            mkt = c.market_type
-            if c.round_number:
-                mkt = f"R{c.round_number}H2H" if c.market_type != "3_ball" else f"R{c.round_number}3B"
-
-            lines.append(
-                f"{i:>2} {name:<20} {mkt:<6} {c.best_book:<10} "
-                f"{c.best_odds_american:>6} {c.edge*100:>4.1f}% ${c.suggested_stake:>3.0f}"
-            )
-
-            # Split into multiple fields if too long
-            if len("\n".join(lines)) > 900:
-                embed.add_field(
-                    name="Candidates" if len(embed.fields) == 0 else "\u200b",
-                    value=f"```\n" + "\n".join(lines) + "\n```",
-                    inline=False,
-                )
-                lines = []
-
-        if lines:
-            embed.add_field(
-                name="Candidates" if len(embed.fields) == 0 else "\u200b",
-                value=f"```\n" + "\n".join(lines) + "\n```",
-                inline=False,
-            )
-
-    # Arbitrage section
-    if arbs:
-        arb_lines = []
-        for j, arb in enumerate(arbs, 1):
-            size_arb(arb, config.ARB_DEFAULT_RETURN)
-            total_outlay = sum(leg.stake for leg in arb.legs)
-            profit = config.ARB_DEFAULT_RETURN - total_outlay
-            legs_str = " + ".join(
-                f"{leg.player.split(',')[0][:10]}@{leg.book[:6]}"
-                f"({leg.odds_decimal:.2f})${leg.stake:.0f}"
-                for leg in arb.legs
-            )
-            warn = " *" if arb.settlement_warning else ""
-            arb_lines.append(
-                f"{j}. {legs_str} = {arb.margin*100:.1f}% "
-                f"${profit:.2f}{warn}"
-            )
-        arb_text = "\n".join(arb_lines)
-        if len(arb_text) > 1000:
-            arb_text = arb_text[:997] + "..."
-        embed.add_field(
-            name="Arbitrage",
-            value=f"```\n{arb_text}\n```",
-            inline=False,
+    file_to_send = None
+    if candidates or arbs:
+        img_path = await asyncio.to_thread(
+            _render_candidates_image, candidates,
+            f"Scan — {tournament_name}", arbs,
         )
+        file_to_send = discord.File(img_path, filename="scan_results.png")
+        embed.set_image(url="attachment://scan_results.png")
 
     embed.set_footer(text="Use /place <number> to log a bet")
-    await interaction.followup.send(embed=embed)
+    await interaction.followup.send(embed=embed, file=file_to_send)
 
 
 def _run_pretournament_scan(tour: str):
@@ -1173,6 +1333,7 @@ def _run_pretournament_scan(tour: str):
                 for c in all_candidates
             ],
             win_outrights_data=outrights.get("win"),
+            display_min_edge=config.DISPLAY_MIN_EDGE,
         )
         all_candidates.extend(edges)
 
@@ -1187,6 +1348,7 @@ def _run_pretournament_scan(tour: str):
                 for c in all_candidates
             ],
             outrights_data=outrights.get("win"),
+            display_min_edge=config.DISPLAY_MIN_EDGE,
         )
         all_candidates.extend(edges)
 
@@ -1366,6 +1528,7 @@ def _run_preround_scan(tour: str, round_number: int | None):
             round_matchups, bankroll=bankroll,
             existing_bets=existing_bets,
             market_type="round_matchup",
+            display_min_edge=config.DISPLAY_MIN_EDGE,
         )
         for e in edges:
             e.round_number = round_number
@@ -1380,6 +1543,7 @@ def _run_preround_scan(tour: str, round_number: int | None):
                 for c in all_candidates
             ],
             round_number=round_number,
+            display_min_edge=config.DISPLAY_MIN_EDGE,
         )
         all_candidates.extend(edges)
 
@@ -1455,6 +1619,18 @@ async def cmd_place(
 
     actual_implied = 1.0 / actual_decimal if actual_decimal > 0 else 0
     actual_edge = c.your_prob - actual_implied
+
+    # Block sub-threshold candidates unless user overrides stake explicitly
+    bet_min = getattr(c, "bet_min_edge", 0.0)
+    if not getattr(c, "qualifies", True) and actual_edge < bet_min and stake is None:
+        await interaction.followup.send(
+            f"⚠️ Candidate #{number} is **info-only** (edge {actual_edge*100:.1f}% "
+            f"< {c.market_type} bet threshold {bet_min*100:.0f}%). "
+            f"No Kelly stake was computed. "
+            f"If you still want to place it, re-run `/place {number} stake:<amount>`."
+        )
+        return
+
     actual_stake = stake if stake is not None else c.suggested_stake
 
     # Warn if edge is gone

@@ -102,6 +102,7 @@ DISCORD_ALERT_ROLE_ID = int(os.getenv("DISCORD_ALERT_ROLE_ID", "0"))  # Role to 
 # Pre-round scans run each morning Thu-Sun.
 ALERT_PRETOURNAMENT_HOUR = 18   # 6 PM ET Wednesday
 ALERT_PREROUND_HOUR = 7        # 7 AM ET Thu-Sun
+ALERT_SETTLEMENT_HOUR = 22     # 10 PM ET Thu-Sun
 ALERT_HIGH_EDGE_THRESHOLD = 0.08  # 8%+ edge gets @role mention
 ALERT_ENABLED = bool(os.getenv("DISCORD_ALERT_CHANNEL_ID", ""))
 
@@ -203,8 +204,13 @@ MIN_EDGE = {
     "tournament_matchup": 0.05,   # 5% — per matchup backtest
     "round_matchup":      0.05,   # 5%
     "3_ball":             0.05,   # 5%
-    "live":               0.08,   # 8% — stale book odds (Amendment #6)
+    "live":               0.04,   # 4% — alert threshold (lowered from 8% for visibility)
 }
+
+# Display floor for scan output. Candidates between DISPLAY_MIN_EDGE and the
+# market's MIN_EDGE are shown for visibility but flagged as sub-threshold
+# (no Kelly stake computed, surfaced as info-only in the report).
+DISPLAY_MIN_EDGE = 0.01
 
 # --- Kelly Sizing ---
 KELLY_FRACTION = 0.25         # Quarter-Kelly
