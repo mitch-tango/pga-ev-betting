@@ -673,7 +673,13 @@ class EVBot(discord.Client):
         log.info("Live monitor stopped")
 
     async def _live_monitor_loop(self, channel, tour: str, round_number: int | None):
-        """Poll for live edges at configured interval."""
+        """Poll for live edges at configured interval.
+
+        Posts a heartbeat scan image to the channel every cycle during
+        tournament hours so it's obvious the monitor is still alive — even
+        when there are no new qualifying edges. Role mentions still only
+        fire on *new* high-edge qualifying candidates.
+        """
         await self.wait_until_ready()
 
         if channel is None:
@@ -688,7 +694,7 @@ class EVBot(discord.Client):
         while self._live_monitor_active and not self.is_closed():
             now_et = datetime.now(ET)
 
-            # Only run during tournament hours
+            # Only run during tournament hours — stay silent overnight.
             if now_et.hour < config.LIVE_MONITOR_START_HOUR or now_et.hour >= config.LIVE_MONITOR_END_HOUR:
                 log.info("Live monitor outside hours (%s ET), sleeping", now_et.strftime("%H:%M"))
                 await asyncio.sleep(interval)
@@ -700,17 +706,19 @@ class EVBot(discord.Client):
                 )
             except Exception as e:
                 log.error("Live monitor scan failed: %s", e)
+                try:
+                    await channel.send(
+                        f":warning: Live monitor scan failed: "
+                        f"`{type(e).__name__}: {str(e)[:200]}` "
+                        f"(retry in {config.LIVE_MONITOR_INTERVAL_MIN}min)"
+                    )
+                except Exception:
+                    pass
                 await asyncio.sleep(interval)
                 continue
 
-            if not candidates:
-                log.info("Live monitor: no edges (%d live players)", stats.get("live_players", 0))
-                await asyncio.sleep(interval)
-                continue
-
-            # Suppress alert unless a *qualifying* (bet-threshold) edge is new.
-            # Sub-threshold rows are still shown in the image for context, but
-            # don't fire new alerts.
+            # Identify NEW qualifying edges. Sub-threshold rows still appear
+            # in the image but never gate the role mention.
             new_qualifying = []
             for c in candidates:
                 if not getattr(c, "qualifies", True):
@@ -720,29 +728,38 @@ class EVBot(discord.Client):
                     self._live_alerted_keys.add(key)
                     new_qualifying.append(c)
 
-            if not new_qualifying:
-                log.info("Live monitor: %d edges but no new qualifying ones", len(candidates))
-                await asyncio.sleep(interval)
-                continue
-
-            # Cache for /place
+            # Cache every cycle so /place always sees the latest scan,
+            # not just the last one with new edges.
             self.last_scan = candidates
             self.last_scan_tournament_id = stats.get("tournament_id")
             self.last_scan_time = datetime.now()
 
-            # Build alert embed
             high_edge = [c for c in new_qualifying if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD]
+            qualifying_total = sum(1 for c in candidates if getattr(c, "qualifies", True))
             sub_threshold = sum(1 for c in candidates if not getattr(c, "qualifies", True))
-            color = 0xE74C3C if high_edge else 0xF39C12
 
-            sub_text = f", {sub_threshold} info-only" if sub_threshold else ""
+            if high_edge:
+                color = 0xE74C3C   # red — new high-edge
+                heading = f"LIVE Edge Alert — {tournament_name}"
+                desc_lead = (f"**{len(new_qualifying)}** new bet-threshold edge(s)"
+                             f" ({len(high_edge)} high-edge)")
+            elif new_qualifying:
+                color = 0xF39C12   # orange — new normal
+                heading = f"LIVE Edge Alert — {tournament_name}"
+                desc_lead = f"**{len(new_qualifying)}** new bet-threshold edge(s)"
+            else:
+                color = 0x5865F2   # blurple — heartbeat, no new edges
+                heading = f"LIVE Scan — {tournament_name}"
+                desc_lead = (
+                    f"No new edges this cycle · {qualifying_total} qualifying tracked"
+                    if qualifying_total else "No qualifying edges this cycle"
+                )
+
+            sub_text = f" · {sub_threshold} info-only" if sub_threshold else ""
             embed = discord.Embed(
-                title=f"LIVE Edge Alert — {tournament_name}",
+                title=heading,
                 description=(
-                    f"**{len(new_qualifying)}** new bet-threshold edge(s)"
-                    f" ({len(high_edge)} high-edge{sub_text})\n"
-                    f"✓ clears market min edge · sub-threshold shown ≥"
-                    f"{config.DISPLAY_MIN_EDGE*100:.0f}% for visibility\n"
+                    f"{desc_lead}{sub_text}\n"
                     f"DG live model: {stats.get('live_players', '?')} players | "
                     f"Matched: {stats.get('matched', '?')}\n"
                     f"Bankroll: ${stats.get('bankroll', 0):,.2f}"
@@ -751,24 +768,23 @@ class EVBot(discord.Client):
                 timestamp=datetime.now(),
             )
 
-            # Render full candidate set (qualifying + sub-threshold) as image
             img_path = await asyncio.to_thread(
-                _render_candidates_image, candidates,
-                f"LIVE Edge Alert — {tournament_name}",
+                _render_candidates_image, candidates, heading,
             )
             img_file = discord.File(img_path, filename="live_edges.png")
             embed.set_image(url="attachment://live_edges.png")
-
-            embed.set_footer(text=f"Use /place <number> to log | Next check in {config.LIVE_MONITOR_INTERVAL_MIN}min")
-
-            mention = ""
-            if high_edge and config.DISCORD_ALERT_ROLE_ID:
-                mention = f"<@&{config.DISCORD_ALERT_ROLE_ID}> "
-
-            await channel.send(
-                content=f"{mention}LIVE: {len(new_qualifying)} new edge(s)!" if mention else None,
-                embed=embed, file=img_file,
+            embed.set_footer(
+                text=f"Next check in {config.LIVE_MONITOR_INTERVAL_MIN}min · /monitor stop to disable"
             )
+
+            content = None
+            if high_edge and config.DISCORD_ALERT_ROLE_ID:
+                content = f"<@&{config.DISCORD_ALERT_ROLE_ID}> LIVE: {len(new_qualifying)} new edge(s)!"
+
+            try:
+                await channel.send(content=content, embed=embed, file=img_file)
+            except Exception as e:
+                log.error("Live monitor send failed: %s", e)
 
             await asyncio.sleep(interval)
 
