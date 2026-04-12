@@ -23,15 +23,28 @@ _MARKET_PATTERNS = [
     ("win", re.compile(r"ODDS TO WIN", re.IGNORECASE)),
     ("t10", re.compile(r"TOP 10 FINISH", re.IGNORECASE)),
     ("t20", re.compile(r"TOP 20 FINISH", re.IGNORECASE)),
-    ("make_cut", re.compile(r"TO MAKE THE CUT", re.IGNORECASE)),
+    ("make_cut", re.compile(r"TO MAKE.*CUT", re.IGNORECASE)),
 ]
 
 # Line pattern: number, player name, odds
+# Some sections (make-cut) have date/time prefixes before the bet number
 _LINE_RE = re.compile(
     r"(\d{4,5})\s+"       # bet number
     r"(.+?)\s+"            # player name
     r"([+-]\d{2,5})\s*$",  # American odds
 )
+
+def _match_line(line: str):
+    """Try to match a player line, using search to handle date prefixes."""
+    return re.search(
+        r"(\d{4,5})\s+"       # bet number
+        r"(.+?)\s+"            # player name
+        r"([+-]\d{2,5})\s*$",  # American odds
+        line.strip(),
+    )
+
+# Strip "MAKE CUT" / "MISS CUT" suffix from make-cut player names
+_MAKE_CUT_SUFFIX = re.compile(r"\s+(MAKE|MISS)\s+CUT\s*$", re.IGNORECASE)
 
 
 def _clean_name(raw: str) -> str:
@@ -88,10 +101,18 @@ def parse_start_outrights(text: str) -> dict[str, list[dict]]:
             continue
 
         # Try to parse a player line
-        m = _LINE_RE.match(line.strip())
+        m = _match_line(line)
         if m:
-            name = _clean_name(m.group(2))
+            raw_name = m.group(2)
             odds = m.group(3)
+
+            # For make-cut market, skip MISS CUT lines (we only want MAKE CUT)
+            if current_market == "make_cut":
+                if re.search(r"\bMISS\s+CUT\b", raw_name, re.IGNORECASE):
+                    continue
+                raw_name = _MAKE_CUT_SUFFIX.sub("", raw_name)
+
+            name = _clean_name(raw_name)
             results[current_market].append({
                 "name": name,
                 "odds": odds,
