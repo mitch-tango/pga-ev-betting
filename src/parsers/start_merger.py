@@ -80,6 +80,11 @@ def merge_start_into_matchups(
     unmatched = []
 
     for sm in start_matchups:
+        # Only merge tournament matchups (round_number=None) into DG
+        # tournament matchups. Round matchups are tracked separately.
+        if sm.get("round_number") is not None:
+            continue
+
         matched = False
 
         for dg in dg_matchups:

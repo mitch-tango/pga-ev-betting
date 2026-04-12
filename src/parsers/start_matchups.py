@@ -80,13 +80,26 @@ def _parse_line(line: str) -> dict | None:
 
 
 _STOP_PATTERNS = re.compile(
-    r"(ODDS TO WIN|TOP \d+ FINISH|TO MAKE THE CUT|TOP \d+\s*\(INCLUDING)",
+    r"(ODDS TO WIN|TOP \d+ FINISH|TO MAKE.*CUT|TOP \d+\s*\(INCLUDING)",
     re.IGNORECASE,
+)
+
+
+_TOURNAMENT_MATCHUP_RE = re.compile(
+    r"TOURNAMENT\s+MATCHUP", re.IGNORECASE,
+)
+
+_ROUND_MATCHUP_RE = re.compile(
+    r"ROUND\s+(\d)\s+MATCHUP", re.IGNORECASE,
 )
 
 
 def parse_start_matchups(text: str) -> list[dict]:
     """Parse copy-pasted Start matchup text into structured matchup records.
+
+    Tracks round_number per section: tournament matchup headers set
+    round_number=None, round matchup headers (e.g. "ROUND 1 MATCHUPS")
+    set round_number to the detected round.
 
     Args:
         text: Raw text copied from Start sportsbook matchups page.
@@ -99,25 +112,29 @@ def parse_start_matchups(text: str) -> list[dict]:
             p2_name: str — second player (title case)
             p1_odds: str — American odds for p1 (e.g., "-155")
             p2_odds: str — American odds for p2 (e.g., "+135")
-            round_number: int | None — round if detected from headers
+            round_number: int | None — None for tournament matchups,
+                integer for round matchups
     """
     lines = text.splitlines()
 
-    # Detect round number from headers
-    round_number = None
-    for line in lines:
-        rn = _extract_round_number(line)
-        if rn is not None:
-            round_number = rn
-            break
-
-    # Parse player lines, stopping at non-matchup section headers
-    parsed_players = []
+    # Parse player lines with per-section round tracking
+    parsed_players = []  # list of (player_dict, round_number)
     in_matchup_section = False
+    current_round: int | None = None
+
     for line in lines:
-        # Detect start of matchup section
-        if "MATCHUP" in line.upper():
+        upper_line = line.upper()
+
+        # Detect matchup section headers and update round context
+        if "MATCHUP" in upper_line:
             in_matchup_section = True
+
+            # Check for round matchup header first (more specific)
+            rm = _ROUND_MATCHUP_RE.search(line)
+            if rm:
+                current_round = int(rm.group(1))
+            elif _TOURNAMENT_MATCHUP_RE.search(line):
+                current_round = None
 
         # Stop at outright/placement section headers
         if in_matchup_section and _STOP_PATTERNS.search(line):
@@ -125,7 +142,7 @@ def parse_start_matchups(text: str) -> list[dict]:
 
         result = _parse_line(line)
         if result:
-            parsed_players.append(result)
+            parsed_players.append((result, current_round))
 
     # Pair consecutive players into matchups
     # Start lists them in pairs: odd index = p1, even index = p2
@@ -133,8 +150,8 @@ def parse_start_matchups(text: str) -> list[dict]:
     matchups = []
     i = 0
     while i + 1 < len(parsed_players):
-        p1 = parsed_players[i]
-        p2 = parsed_players[i + 1]
+        p1, p1_round = parsed_players[i]
+        p2, p2_round = parsed_players[i + 1]
 
         # Verify they're a pair (consecutive numbers)
         if abs(p1["number"] - p2["number"]) == 1:
@@ -143,7 +160,7 @@ def parse_start_matchups(text: str) -> list[dict]:
                 "p2_name": p2["name"],
                 "p1_odds": p1["moneyline"],
                 "p2_odds": p2["moneyline"],
-                "round_number": round_number,
+                "round_number": p1_round,
             })
             i += 2
         else:
