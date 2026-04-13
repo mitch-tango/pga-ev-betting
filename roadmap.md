@@ -1,6 +1,6 @@
 # PGA +EV Betting System — Roadmap
 
-Last updated: 2026-04-12 (post-Masters data audit)
+Last updated: 2026-04-13 (post-Masters audit resolved — P0/P1 shipped)
 
 ## Completed
 
@@ -20,90 +20,82 @@ Last updated: 2026-04-12 (post-Masters data audit)
 - **Expert picks signal**: YouTube transcript extraction (Rick Gehman, Pat Mayo, Betsperts) + Claude API (Haiku) pick extraction; aggregated consensus signal per player with sentiment scoring; candidate annotation with EP column; Discord `/expertpicks` command; Betsperts article support via cached text files
 
 - **Dashboard / Web UI**: Streamlit app with 4 pages (Active Bets, Performance, Bankroll, Model Health); Supabase data layer with cached queries; Plotly charts for P&L curves, calibration, CLV trends, edge tier analysis; deployed on Streamlit Cloud
-- **Candidate lifecycle tracking**: All candidates inserted to DB before placement, linked to bets via candidate_id, skip reasons tracked. Monitoring views: v_clv_coverage, v_execution_slippage, v_candidate_fill_rate
+- **Candidate lifecycle tracking**: All candidates inserted to DB before placement, linked to bets via candidate_id, skip reasons tracked. Monitoring views: v_clv_coverage, v_execution_slippage, v_candidate_fill_rate. *(Note: originally shipped only in CLI scripts; Discord `/scan` → `/place` silently hardcoded `candidate_id=None`. Fixed 2026-04-13 — see "Post-Masters fixes" below.)*
+- **Settlement pipeline**: Archive-first results fetch (`pull_results.fetch_archived_results`) so completed tournaments remain settleable after DG field-updates rolls to next week; cut-opponent matchup handling (treats a cut opponent as a loss for the active player, not a WD-void); startup settlement catch-up in `_scheduled_alerts` so missed Sun 10pm runs recover on next bot restart. *(2026-04-13)*
 
 ---
 
-## Post-Masters Data Audit (2026-04-12)
+## Post-Masters Fixes (shipped 2026-04-13)
 
-Direct Supabase query after the Masters revealed the system is accumulating
-much less actionable data than the roadmap assumed. **Three findings, one of
-them is a silent bug that breaks every downstream validation phase.**
+The Masters post-mortem (2026-04-12) found two silent failures that the
+roadmap had marked "Completed." Both are now fixed.
 
-**Snapshot at end of Masters week:**
-- `candidate_bets`: **68 rows**, 1 tournament, 66 pretournament + **only 2 live**
-  - Markets: 56 make-cut, 6 T20, 5 tournament matchup, 1 round matchup
-  - Course-fit signal coverage: 66/68 (97% — works as intended)
-- `bets`: **13 rows**, $187 total stake, 1 tournament
-  - **0 settled** (every row has `outcome = NULL`)
-  - **0 of 13 linked to a candidate** (every row has `candidate_id = NULL`)
-  - 8/13 have `closing_odds_decimal` set (CLV partial coverage)
+**P0 — Candidate→bet linkage was broken in the Discord path.** The CLI
+scripts (`scripts/run_pretournament.py` et al) correctly inserted candidates
+and linked `bets.candidate_id` on `/place`, but the Discord `/scan` path
+cached candidates only in memory and `/place` hardcoded `candidate_id=None`.
+Every bet the user had ever placed via Discord was landing unlinked,
+blocking every downstream validation phase.
 
-### P0: Fix the candidate→bet linkage (silent data-pipeline bug)
-**Priority: Critical** | Effort: Low (probably)
+- Commit `e98697a`: added `CandidateBet.candidate_id`, a
+  `db.persist_candidates()` helper that inserts a batch and mutates each
+  candidate in place with its new row id, wired it into all four bot scan
+  paths (`_run_pretournament_scan`, `_run_preround_scan`, `_live_monitor_loop`,
+  `/monitor once`), and fixed `/place` to pass the linked id.
+- Backfilled 9/13 existing Masters bets (matched scan-captured candidates
+  by player/market/opponents/round). The 4 unlinked bets were NoVig
+  outrights placed manually with no scan counterpart — stay unlinked,
+  which is expected (see memory: "NoVig bets are logged manually").
 
-The "Completed" entry that says *"All candidates inserted to DB before
-placement, linked to bets via candidate_id, skip reasons tracked"* is not
-actually working. Every bet in the database has `candidate_id = NULL`. The
-candidate rows exist (68 of them) and the bet rows exist (13 of them), but
-nothing is connecting the two. **This kills every downstream validation
-analysis on this roadmap**, because each one needs to join `bets.outcome`
-back to `candidate_bets.<signal>`:
+**P1 — Auto-settlement had two compounding failures.** The bot was offline
+at Sun 10pm ET when the scheduled settlement hook was supposed to fire, AND
+the code only read from DG's live `field-updates` endpoint, which had
+already rolled over to RBC Heritage by Monday morning, making Masters
+results structurally unreachable through `/settle`.
 
-| Roadmap item | Required join | Currently possible? |
-|---|---|---|
-| Course-fit Kelly modifier validation | `bet.outcome ↔ candidate.coursefit_signal` | No |
-| Expert-picks signal validation | `bet.outcome ↔ candidate.expert_signal` | No |
-| Live edge calibration | live `candidate ↔ bet placed` | No (and only 2 live candidates exist) |
-| Tranche weight live evaluation | `bet.outcome ↔ candidate.tranche` | No |
-| Per-book sharpness live eval | `bet.outcome ↔ candidate.all_book_odds` | No |
+- Recovery: one-off script against DG's `historical-odds/outrights` archive
+  settled all 13 bets (8 wins, 5 losses, session P&L +$21.68, bankroll
+  $853 → $1,061.68).
+- Commit `84a80b7`: `pull_results.fetch_archived_results()` pulls from the
+  historical archive and returns the same shape as `fetch_results()` so the
+  downstream match/settle code is unchanged. `_run_settlement` groups bets
+  by `tournament_id` and resolves results per-tournament via a new
+  `_results_for_tournament` helper that prefers the archive and falls back
+  to `fetch_results()` only when the event isn't archived yet. Cut-opponent
+  matchups no longer void via `wd_rule` (the original code treated any
+  `status != 'active'` as `pos=None` and let `settle_matchup_bet` apply the
+  WD void — wrong, because making the cut is a normal result). Added a
+  startup settlement sweep to `_scheduled_alerts` so a missed Sunday 10pm
+  run recovers on next bot restart, not the next tournament week.
 
-**Until this is fixed, accumulating more tournaments is wasted effort** — we
-just stockpile unjoinable rows. This is the highest-leverage thing in the
-repo right now and is almost certainly a small fix once located. Trace the
-`/place` flow and `_run_and_alert` paths to find where `candidate_id` is
-supposed to be attached on insert and why it isn't.
+**P2 — Live monitoring volume.** Still open as a post-mortem item for
+the next tournament; the heartbeat + staleness fixes are shipped but
+unvalidated against a second data point. Revisit at end of RBC Heritage.
 
-### P1: Verify Masters auto-settlement actually fires
-**Priority: High** | Effort: Investigation only
-
-`bets.outcome` is `NULL` on all 13 Masters bets. The Masters R4 just ended
-~7 PM ET tonight, so the most charitable read is the auto-settlement loop
-hasn't run yet. The less charitable read is that auto-settlement (listed as
-"Completed" in this roadmap) hasn't actually been firing for the Masters at
-all. Either way, this needs verification: check tomorrow morning whether
-outcomes have been backfilled, and if not, dig into the settlement scheduler.
-Same general failure mode as the staleness filter we found today — feature is
-"shipped" but not actually exercising the code path it claims to.
-
-### P2: Live monitoring volume audit
-**Priority: Medium** | Effort: Investigation only
-
-Only **2 live-scan candidates** in the entire database for the entire Masters.
-That number was always going to be small because of the staleness-filter bug
-(silently no-op until ~14:10 today, so live scans during R1-R3 surfaced
-nothing because the round-matchup filter was kept off). But it's worth a
-post-mortem next tournament to confirm the heartbeat fix and the staleness
-fix actually push that number into the dozens.
+**Snapshot after fixes (2026-04-13):**
+- `candidate_bets`: 68 rows (unchanged), 9 now correctly marked `status='placed'`
+- `bets`: 13 rows, **all 13 settled**, 9 linked to candidates
+- Session P&L on Masters: +$21.68 | Bankroll: $1,061.68
+- Discord bot restarted on new code (PID confirmed post-restart); startup catch-up ran once as a no-op
 
 ---
 
 ## Quick Wins / To-Do
 
-- [ ] **[P0] Fix candidate→bet linkage** — see Post-Masters Data Audit above. Highest-leverage item in the repo right now; blocks every validation phase listed under "Next Up." Trace `/place` and the live-monitor scan path to find where `candidate_id` is supposed to attach.
-- [ ] **[P1] Verify Masters auto-settlement** — confirm `bets.outcome` gets backfilled now that R4 has finished. If not, fix the settlement scheduler.
-- [ ] **[P3] NoVig integration** — see section 3a below. Blocked on user requesting OAuth credentials from NoVig.
-- [ ] **[P3] Market-aware dead-heat exemptions** — BetMGM and Pinnacle pay ties in full on placement markets (T5/T10/T20) but still apply dead-heat to 3-balls. `NO_DEADHEAT_BOOKS` config needs to become market-type-aware so edge calculator doesn't penalize these books on placements. Could surface currently-hidden edges. Best item to do tonight if waiting on NoVig and the P0/P1 work is in flight.
+- [ ] **[P3] Market-aware dead-heat exemptions** — BetMGM and Pinnacle pay ties in full on placement markets (T5/T10/T20) but still apply dead-heat to 3-balls. `NO_DEADHEAT_BOOKS` config needs to become market-type-aware so the edge calculator doesn't penalize these books on placements. Could surface currently-hidden edges. Best P3 item for a single session.
 - [ ] **[P3] Arb legs as placeable candidates** — Log each arb leg as a candidate bet when detected so they're selectable via `/place` like regular candidates. Currently arbs are display-only in scan output.
+- [ ] **[P3] NoVig integration** — see section 3a below. Blocked on user requesting OAuth credentials from NoVig.
 - [ ] **[P4] Expand course profiles** — Only 8 of ~40+ PGA Tour venues have profiles. Build profiles for upcoming tournament venues using Betsperts course stats pages. Improves course-fit signal quality for data collection phase. Steady background work; not urgent mid-season.
-- [x] **Run `scripts/status.py` health check** — Done via direct Supabase query 2026-04-12; results captured in Post-Masters Data Audit section above.
-- [x] **Verify candidate lifecycle end-to-end** — Done via direct Supabase query 2026-04-12. Result: lifecycle is broken. See P0 above.
+- [x] **[P0] Fix candidate→bet linkage** — shipped 2026-04-13 (commit `e98697a`). See "Post-Masters Fixes" above.
+- [x] **[P1] Masters auto-settlement recovered + permanent fixes** — shipped 2026-04-13 (commit `84a80b7`). See "Post-Masters Fixes" above.
+- [x] **Run `scripts/status.py` health check** — Done via direct Supabase query 2026-04-12.
+- [x] **Verify candidate lifecycle end-to-end** — Done 2026-04-12; broken; now fixed.
 - [x] **Book settlement rules** — Loaded 78 rules across 14 books/exchanges into Supabase. Start rules still unknown (no public page).
 
 **Things explicitly NOT next, even though they're tempting:**
-- Course-fit / expert-picks Kelly modifiers — need 3-5 tournaments of *joinable* data, which we won't have until the P0 candidate→bet link is fixed AND a few more tournaments roll through
-- Live edge calibration / dynamic threshold — same data dependency, plus we have only 2 live candidates total
-- Pinnacle / PrizePicks direct integrations — lower marginal value than NoVig given NoVig is the user's actual venue
+- Course-fit / expert-picks Kelly modifier **validation** — still needs 3-5 tournaments of joinable data. The P0 fix unblocks this for *new* tournaments but doesn't retroactively help the Masters (9 linked is fine for a first data point, not enough for validation).
+- Live edge calibration / dynamic threshold — same data dependency, plus still only 2 live candidates in the DB.
+- Pinnacle / PrizePicks direct integrations — lower marginal value than NoVig given NoVig is the user's actual venue.
 
 ---
 
