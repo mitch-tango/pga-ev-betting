@@ -92,6 +92,43 @@ def insert_candidates(candidates: list[dict]) -> list[dict]:
     return result.data
 
 
+def persist_candidates(candidates, tournament_id: str | None,
+                       scan_type: str) -> int:
+    """Insert a batch of CandidateBet objects and attach their new DB ids.
+
+    Mutates each candidate in place by setting ``candidate_id`` to the row
+    id returned by Supabase, so downstream placement flows (e.g. Discord
+    ``/place``) can link the resulting ``bets`` row back to the candidate.
+    Matching is done by (player_name, market_type, opponent_name,
+    opponent_2_name, round_number), which is unique within a single scan
+    because ``calculate_*_edges`` dedupes on that key.
+
+    Returns the number of rows successfully inserted.
+    """
+    if not candidates or not tournament_id:
+        return 0
+
+    rows = [c.to_db_dict(tournament_id, scan_type) for c in candidates]
+    inserted = insert_candidates(rows)
+
+    lookup = {
+        (r["player_name"], r["market_type"],
+         r.get("opponent_name") or "",
+         r.get("opponent_2_name") or "",
+         r.get("round_number")): r["id"]
+        for r in inserted
+    }
+    for c in candidates:
+        key = (c.player_name, c.market_type,
+               c.opponent_name or "",
+               c.opponent_2_name or "",
+               c.round_number)
+        cid = lookup.get(key)
+        if cid:
+            c.candidate_id = cid
+    return len(inserted)
+
+
 def update_candidate_status(candidate_id: str, status: str,
                             skip_reason: str | None = None) -> dict:
     """Update a candidate's status (pending -> placed/skipped/expired)."""

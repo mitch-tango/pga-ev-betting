@@ -748,6 +748,11 @@ class EVBot(discord.Client):
                 await asyncio.sleep(interval)
                 continue
 
+            if candidates:
+                db.persist_candidates(
+                    candidates, stats.get("tournament_id"), "live",
+                )
+
             # Identify NEW qualifying edges. Sub-threshold rows still appear
             # in the image but never gate the role mention.
             new_qualifying = []
@@ -965,6 +970,8 @@ async def cmd_monitor(
             )
             await interaction.followup.send(embed=embed)
             return
+
+        db.persist_candidates(candidates, stats.get("tournament_id"), "live")
 
         # Cache for /place
         bot.last_scan = candidates
@@ -1411,6 +1418,7 @@ def _run_pretournament_scan(tour: str):
 
     if all_candidates:
         resolve_candidates(all_candidates, source="datagolf")
+        db.persist_candidates(all_candidates, tournament_id, "pretournament")
 
     # Arbitrage scan on matchups
     arbs = detect_matchup_arbs(matchups, market_type="tournament_matchup") if matchups else []
@@ -1613,6 +1621,7 @@ def _run_preround_scan(tour: str, round_number: int | None):
 
     if all_candidates:
         resolve_candidates(all_candidates, source="datagolf")
+        db.persist_candidates(all_candidates, tournament_id, "preround")
 
     # Arbitrage scan
     arbs = []
@@ -1708,7 +1717,7 @@ async def cmd_place(
     try:
         bet = await asyncio.to_thread(
             db.insert_bet,
-            candidate_id=None,
+            candidate_id=getattr(c, "candidate_id", None),
             tournament_id=bot.last_scan_tournament_id,
             market_type=c.market_type,
             player_name=c.player_name,

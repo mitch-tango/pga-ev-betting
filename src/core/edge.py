@@ -93,6 +93,10 @@ class CandidateBet:
     expert_score: float | None = None
     expert_pick_count: int | None = None
 
+    # Populated after the candidate is persisted to candidate_bets, so /place
+    # can link the resulting bet row back via bets.candidate_id.
+    candidate_id: str | None = None
+
     def to_db_dict(self, tournament_id: str, scan_type: str) -> dict:
         """Convert to dict suitable for Supabase insertion."""
         d = {
