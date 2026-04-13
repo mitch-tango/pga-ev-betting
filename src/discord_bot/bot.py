@@ -53,7 +53,9 @@ from src.pipeline.pull_prophetx import (
 )
 from src.pipeline.pull_live import pull_live_predictions
 from src.pipeline.pull_live_edges import pull_live_edges
-from src.pipeline.pull_results import fetch_results, match_bets_to_results
+from src.pipeline.pull_results import (
+    fetch_results, fetch_archived_results, match_bets_to_results,
+)
 from src.core.arb import (
     detect_matchup_arbs, detect_3ball_arbs, format_arb_table, size_arb,
 )
@@ -314,6 +316,17 @@ class EVBot(discord.Client):
             round_number = weekday - 2
             await self._run_and_alert("preround", round_number=round_number)
             fired_today.add(date_key)
+
+        # Catch-up: on every startup, run settlement once. If the previous
+        # scheduled Sun 10pm ET run was missed (bot down or restarted), this
+        # is what closes out last week's tournament. Safe as a no-op when
+        # there are no unsettled bets or the event hasn't finished yet —
+        # _run_settlement just skips anything it can't match.
+        try:
+            log.info("Catch-up: running settlement sweep on startup")
+            await self._run_scheduled_settlement()
+        except Exception as e:
+            log.error("Startup settlement catch-up failed: %s", e)
 
         while not self.is_closed():
             now_et = datetime.now(ET)
@@ -2009,8 +2022,36 @@ async def cmd_settle(
         await bot._post_tournament_summary(tid, channel=interaction.channel)
 
 
+def _results_for_tournament(tournament_id: str | None, tour: str) -> dict | None:
+    """Resolve a results dict for a given tournament.
+
+    Prefers the DG historical archive (authoritative once the event
+    completes and still available after field-updates rolls to the
+    next week). Falls back to live field-updates for in-progress
+    tournaments. Returns None if neither path has usable data.
+    """
+    if tournament_id:
+        t = db.get_tournament_by_id(tournament_id)
+        if t and t.get("dg_event_id") and t.get("season"):
+            archived = fetch_archived_results(
+                event_id=t["dg_event_id"], year=t["season"], tour=tour,
+            )
+            if archived:
+                return archived
+
+    try:
+        return fetch_results(tour=tour)
+    except Exception:
+        return None
+
+
 def _run_settlement(tournament_id: str | None, tour: str):
-    """Run auto-settlement (blocking)."""
+    """Run auto-settlement (blocking).
+
+    Groups unsettled bets by tournament so completed tournaments can
+    settle against the historical archive even after the live DG event
+    has rolled over to the next week.
+    """
     if tournament_id:
         bets = db.get_unsettled_bets(tournament_id)
     else:
@@ -2020,63 +2061,71 @@ def _run_settlement(tournament_id: str | None, tour: str):
     if not bets:
         return ([], [], 0, 0, db.get_bankroll())
 
-    # Pull results
-    results = None
-    try:
-        results = fetch_results(tour=tour)
-        bets = match_bets_to_results(bets, results)
-    except Exception:
-        pass  # Will skip auto-settle for unmatched
+    from collections import defaultdict
+    bets_by_tid: dict[str | None, list] = defaultdict(list)
+    for b in bets:
+        bets_by_tid[b.get("tournament_id")].append(b)
 
-    settled = []
+    all_bets_processed: list = []
+    settled: list = []
     skipped = 0
-    total_pnl = 0
+    total_pnl = 0.0
 
-    for bet in bets:
-        pr = bet.get("player_result")
-        if not pr or not bet.get("auto_settleable"):
-            skipped += 1
+    for tid, tbets in bets_by_tid.items():
+        results = _results_for_tournament(tid, tour)
+        if not results:
+            skipped += len(tbets)
+            all_bets_processed.extend(tbets)
             continue
 
-        market = bet["market_type"]
-        result = None
+        tbets = match_bets_to_results(tbets, results)
+        all_bets_processed.extend(tbets)
 
-        if market in ("win", "t5", "t10", "t20", "make_cut"):
-            result = _auto_settle_placement(bet, pr, results)
-        elif market in ("tournament_matchup", "round_matchup"):
-            or_ = bet.get("opponent_result")
-            if or_:
-                result = _auto_settle_matchup(bet, pr, or_)
-        elif market == "3_ball":
-            or_ = bet.get("opponent_result")
-            o2r = bet.get("opponent_2_result")
-            if or_ and o2r:
-                result = _auto_settle_3ball(bet, pr, or_, o2r)
+        for bet in tbets:
+            pr = bet.get("player_result")
+            if not pr or not bet.get("auto_settleable"):
+                skipped += 1
+                continue
 
-        if result is None:
-            skipped += 1
-            continue
+            market = bet["market_type"]
+            result = None
 
-        db.settle_bet(
-            bet_id=bet["id"],
-            outcome=result["outcome"],
-            settlement_rule=result["settlement_rule"],
-            payout=result["payout"],
-            pnl=result["pnl"],
-            actual_finish=result.get("actual_finish"),
-            opponent_finish=result.get("opponent_finish"),
-        )
+            if market in ("win", "t5", "t10", "t20", "make_cut"):
+                result = _auto_settle_placement(bet, pr, results)
+            elif market in ("tournament_matchup", "round_matchup"):
+                or_ = bet.get("opponent_result")
+                if or_:
+                    result = _auto_settle_matchup(bet, pr, or_)
+            elif market == "3_ball":
+                or_ = bet.get("opponent_result")
+                o2r = bet.get("opponent_2_result")
+                if or_ and o2r:
+                    result = _auto_settle_3ball(bet, pr, or_, o2r)
 
-        total_pnl += result["pnl"]
-        settled.append({
-            "player": bet["player_name"],
-            "outcome": result["outcome"],
-            "pnl": result["pnl"],
-            "rule": result["settlement_rule"],
-        })
+            if result is None:
+                skipped += 1
+                continue
+
+            db.settle_bet(
+                bet_id=bet["id"],
+                outcome=result["outcome"],
+                settlement_rule=result["settlement_rule"],
+                payout=result["payout"],
+                pnl=result["pnl"],
+                actual_finish=result.get("actual_finish"),
+                opponent_finish=result.get("opponent_finish"),
+            )
+
+            total_pnl += result["pnl"]
+            settled.append({
+                "player": bet["player_name"],
+                "outcome": result["outcome"],
+                "pnl": result["pnl"],
+                "rule": result["settlement_rule"],
+            })
 
     bankroll = db.get_bankroll()
-    return (bets, settled, skipped, total_pnl, bankroll)
+    return (all_bets_processed, settled, skipped, total_pnl, bankroll)
 
 
 def _auto_settle_placement(bet, pr, results):
@@ -2142,9 +2191,6 @@ def _auto_settle_matchup(bet, pr, or_):
     """Auto-settle a matchup bet."""
     from src.core.settlement import settle_matchup_bet
 
-    p_pos = pr["pos"] if pr["status"] == "active" else None
-    o_pos = or_["pos"] if or_["status"] == "active" else None
-
     rule = db.get_book_rule(bet["book"], bet["market_type"])
     tie_rule = rule.get("tie_rule", "push") if rule else "push"
     wd_rule = rule.get("wd_rule", "void") if rule else "void"
@@ -2175,6 +2221,29 @@ def _auto_settle_matchup(bet, pr, or_):
                             "actual_finish": str(p_score),
                             "opponent_finish": str(o_score)}
 
+    # Cut handling — settle_matchup_bet (via wd_rule) would void on a
+    # None finish, which is wrong for cut players: making it to Friday
+    # and missing the cut is a normal tournament result, not a WD.
+    # A cut player loses the matchup to any active opponent.
+    p_cut = pr["status"] == "cut"
+    o_cut = or_["status"] == "cut"
+    if p_cut or o_cut:
+        if p_cut and o_cut:
+            return {"outcome": "push", "settlement_rule": "both_missed_cut",
+                    "payout": round(bet["stake"], 2), "pnl": 0.0,
+                    "actual_finish": "MC", "opponent_finish": "MC"}
+        if p_cut:
+            return {"outcome": "loss", "settlement_rule": "missed_cut",
+                    "payout": 0.0, "pnl": round(-bet["stake"], 2),
+                    "actual_finish": "MC", "opponent_finish": or_["pos_str"]}
+        payout = bet["stake"] * bet["odds_at_bet_decimal"]
+        return {"outcome": "win", "settlement_rule": "opponent_missed_cut",
+                "payout": round(payout, 2),
+                "pnl": round(payout - bet["stake"], 2),
+                "actual_finish": pr["pos_str"], "opponent_finish": "MC"}
+
+    p_pos = pr["pos"] if pr["status"] == "active" else None
+    o_pos = or_["pos"] if or_["status"] == "active" else None
     result = settle_matchup_bet(
         p_pos, o_pos, bet["stake"], bet["odds_at_bet_decimal"],
         tie_rule=tie_rule, wd_rule=wd_rule,

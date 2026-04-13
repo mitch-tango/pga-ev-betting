@@ -134,6 +134,77 @@ def fetch_results(tour: str = "pga") -> dict:
     }
 
 
+def fetch_archived_results(event_id: str | int, year: int,
+                           tour: str = "pga") -> dict | None:
+    """Fetch results for a completed event from the DG historical archive.
+
+    Returns a results dict in the same shape as ``fetch_results()``, or
+    ``None`` if the archive doesn't yet have outcomes for this event
+    (``event_completed`` missing). DG typically populates the archive
+    within a few hours of the final round ending — once it does, this
+    path is authoritative and remains available after the live
+    field-updates endpoint has rolled over to the next tournament.
+
+    Only win-market archive rows are pulled since they cover the full
+    field (including cut players), which is all we need for settlement.
+    """
+    dg = DataGolfClient()
+    resp = dg.get_historical_outrights(
+        event_id=str(event_id), year=year, market="win",
+        book="pinnacle", tour=tour,
+    )
+    if resp.get("status") != "ok":
+        return None
+    data = resp.get("data") or {}
+    if not data.get("event_completed"):
+        return None
+
+    players = {}
+    for p in data.get("odds", []) or []:
+        name = p.get("player_name", "")
+        if not name:
+            continue
+        outcome = str(p.get("outcome", "")).strip()
+        up = outcome.upper()
+        pos = None
+        pos_str = outcome
+        status = "active"
+
+        if up in ("CUT", "MC"):
+            pos_str = "MC"
+            status = "cut"
+        elif up == "WD":
+            pos_str = "WD"
+            status = "wd"
+        elif up == "DQ":
+            pos_str = "DQ"
+            status = "dq"
+        else:
+            try:
+                pos = int(outcome.lstrip("T"))
+            except (ValueError, TypeError):
+                pass
+
+        players[_normalize(name)] = {
+            "name": name,
+            "dg_id": str(p.get("dg_id", "")),
+            "pos": pos,
+            "pos_str": pos_str,
+            "status": status,
+            # The archive doesn't expose per-round scores on the
+            # outrights endpoint, so round_matchup fallback to
+            # settle_matchup_bet will have to rely on final position.
+            "r1": None, "r2": None, "r3": None, "r4": None,
+            "total": None,
+        }
+
+    return {
+        "event_name": data.get("event_name", "Unknown Event"),
+        "current_round": 4,
+        "players": players,
+    }
+
+
 def match_player(bet_name: str, results: dict[str, dict],
                  threshold: float = 0.85) -> dict | None:
     """Find the best matching player in results for a bet's player name.
