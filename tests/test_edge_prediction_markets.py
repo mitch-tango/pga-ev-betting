@@ -1,10 +1,11 @@
 """Tests for generalized edge calculation with multiple prediction markets.
 
 Validates that edge.py:
-1. Uses NO_DEADHEAT_BOOKS (not KALSHI_NO_DEADHEAT_BOOKS)
+1. Uses NO_DEADHEAT_BOOKS_BY_MARKET (not a flat set)
 2. Generalizes ask-based pricing via _{book}_ask_prob pattern
 3. Validates ask probability values
 """
+from __future__ import annotations
 
 import logging
 
@@ -51,15 +52,18 @@ def _make_field(target: dict, book_name: str | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 class TestDeadHeatBypass:
-    """NO_DEADHEAT_BOOKS controls which books skip dead-heat reduction."""
+    """NO_DEADHEAT_BOOKS_BY_MARKET controls which books skip dead-heat
+    reduction per market type. Books whose book_rules tie_rule is 'win'
+    pay ties in full and must not be penalised by the DH haircut."""
 
-    def test_config_has_no_deadheat_books(self):
-        assert hasattr(config, "NO_DEADHEAT_BOOKS")
-        assert "kalshi" in config.NO_DEADHEAT_BOOKS
-        assert "polymarket" in config.NO_DEADHEAT_BOOKS
+    def test_config_has_no_deadheat_books_by_market(self):
+        assert hasattr(config, "NO_DEADHEAT_BOOKS_BY_MARKET")
+        for mkt in ("t5", "t10", "t20"):
+            assert "kalshi" in config.NO_DEADHEAT_BOOKS_BY_MARKET[mkt]
+            assert "polymarket" in config.NO_DEADHEAT_BOOKS_BY_MARKET[mkt]
 
     def test_polymarket_skips_deadheat(self):
-        """Polymarket is in NO_DEADHEAT_BOOKS -> deadheat_adj == 0.0."""
+        """Polymarket is in NO_DEADHEAT_BOOKS_BY_MARKET -> deadheat_adj == 0.0."""
         target = {
             "player_name": "Scottie Scheffler",
             "dg_id": "18417",
@@ -73,8 +77,9 @@ class TestDeadHeatBypass:
         assert len(poly_bets) > 0, "Expected at least one polymarket bet"
         assert poly_bets[0].deadheat_adj == 0.0
 
-    def test_prophetx_applies_deadheat(self):
-        """ProphetX is NOT in NO_DEADHEAT_BOOKS -> deadheat_adj != 0."""
+    def test_prophetx_skips_deadheat(self):
+        """ProphetX is a binary-contract exchange (book_rules.tie_rule='win')
+        so it should skip dead-heat reduction just like kalshi/polymarket."""
         target = {
             "player_name": "Scottie Scheffler",
             "dg_id": "18417",
@@ -86,10 +91,58 @@ class TestDeadHeatBypass:
         results = calculate_placement_edges(field, market_type="t10")
         px_bets = [c for c in results if c.best_book == "prophetx"]
         assert len(px_bets) > 0, "Expected at least one prophetx bet"
-        assert px_bets[0].deadheat_adj != 0.0
+        assert px_bets[0].deadheat_adj == 0.0
+
+    def test_betmgm_skips_deadheat_on_placement(self):
+        """BetMGM pays ties in full on placement markets (book_rules
+        t10 tie_rule='win', notes: 'pays ties in full on placement
+        markets'). Dead-heat adj must be zero for BetMGM on T10/T20."""
+        target = {
+            "player_name": "Scottie Scheffler",
+            "dg_id": "18417",
+            "datagolf": {"baseline_history_fit": "+150"},
+            "betmgm": "+600",
+        }
+        field = _make_field(target, book_name="betmgm")
+        results = calculate_placement_edges(field, market_type="t10")
+        bmgm_bets = [c for c in results if c.best_book == "betmgm"]
+        assert len(bmgm_bets) > 0, "Expected at least one betmgm bet"
+        assert bmgm_bets[0].deadheat_adj == 0.0
+
+    def test_pinnacle_skips_deadheat_on_placement(self):
+        """Pinnacle pays ties in full on placement markets (book_rules
+        t10 tie_rule='win')."""
+        target = {
+            "player_name": "Scottie Scheffler",
+            "dg_id": "18417",
+            "datagolf": {"baseline_history_fit": "+150"},
+            "pinnacle": "+600",
+        }
+        field = _make_field(target, book_name="pinnacle")
+        results = calculate_placement_edges(field, market_type="t10")
+        pin_bets = [c for c in results if c.best_book == "pinnacle"]
+        assert len(pin_bets) > 0, "Expected at least one pinnacle bet"
+        assert pin_bets[0].deadheat_adj == 0.0
+
+    def test_draftkings_applies_deadheat(self):
+        """DraftKings applies standard dead-heat on placement ties
+        (book_rules t10 tie_rule='dead_heat'). This is the regression
+        check that the exemption doesn't accidentally include books
+        that do apply dead-heat."""
+        target = {
+            "player_name": "Scottie Scheffler",
+            "dg_id": "18417",
+            "datagolf": {"baseline_history_fit": "+150"},
+            "draftkings": "+600",
+        }
+        field = _make_field(target, book_name="draftkings")
+        results = calculate_placement_edges(field, market_type="t10")
+        dk_bets = [c for c in results if c.best_book == "draftkings"]
+        assert len(dk_bets) > 0, "Expected at least one draftkings bet"
+        assert dk_bets[0].deadheat_adj != 0.0
 
     def test_kalshi_still_skips_deadheat_regression(self):
-        """Kalshi remains in NO_DEADHEAT_BOOKS (regression)."""
+        """Kalshi remains exempt (regression)."""
         target = {
             "player_name": "Scottie Scheffler",
             "dg_id": "18417",

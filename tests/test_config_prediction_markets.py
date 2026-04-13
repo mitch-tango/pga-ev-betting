@@ -104,19 +104,44 @@ class TestBookWeights:
 
 
 class TestNoDeadheatBooks:
-    """NO_DEADHEAT_BOOKS set contains correct entries."""
+    """NO_DEADHEAT_BOOKS_BY_MARKET and the legacy flat alias.
+
+    The exempt set mirrors book_rules: any book whose tie_rule is 'win'
+    on a given market pays ties in full and should skip dead-heat.
+    """
 
     def test_contains_kalshi(self):
         import config
-        assert "kalshi" in config.NO_DEADHEAT_BOOKS
+        for mkt in ("t5", "t10", "t20"):
+            assert "kalshi" in config.NO_DEADHEAT_BOOKS_BY_MARKET[mkt]
 
     def test_contains_polymarket(self):
         import config
-        assert "polymarket" in config.NO_DEADHEAT_BOOKS
+        for mkt in ("t5", "t10", "t20"):
+            assert "polymarket" in config.NO_DEADHEAT_BOOKS_BY_MARKET[mkt]
 
-    def test_prophetx_not_included(self):
+    def test_contains_prophetx(self):
+        """ProphetX is a binary-contract exchange — tie_rule 'win' on
+        every placement market per book_rules."""
         import config
-        assert "prophetx" not in config.NO_DEADHEAT_BOOKS
+        for mkt in ("t5", "t10", "t20"):
+            assert "prophetx" in config.NO_DEADHEAT_BOOKS_BY_MARKET[mkt]
+
+    def test_contains_betmgm_and_pinnacle(self):
+        """BetMGM and Pinnacle pay ties in full on placement markets
+        (book_rules t5/t10/t20 rows show tie_rule='win')."""
+        import config
+        for mkt in ("t5", "t10", "t20"):
+            assert "betmgm" in config.NO_DEADHEAT_BOOKS_BY_MARKET[mkt]
+            assert "pinnacle" in config.NO_DEADHEAT_BOOKS_BY_MARKET[mkt]
+
+    def test_legacy_flat_set_is_union(self):
+        """NO_DEADHEAT_BOOKS must equal the union of per-market sets so
+        call sites that don't know the market type still see all the
+        exempt books."""
+        import config
+        union = set().union(*config.NO_DEADHEAT_BOOKS_BY_MARKET.values())
+        assert config.NO_DEADHEAT_BOOKS == union
 
     def test_deprecated_alias_removed(self):
         """KALSHI_NO_DEADHEAT_BOOKS alias was removed in section 03."""

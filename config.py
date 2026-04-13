@@ -237,8 +237,25 @@ DEADHEAT_AVG_REDUCTION = {
     "t20": 0.038,   # ~3.8%
 }
 
-# Books exempt from dead-heat adjustment (binary contract payout, no DH reduction)
-NO_DEADHEAT_BOOKS = {"kalshi", "polymarket"}
+# Books exempt from dead-heat adjustment, per market type.
+# Mirrors the `book_rules` table (source of truth): any book whose
+# tie_rule is 'win' on a given market type pays ties in full and should
+# skip the dead-heat haircut on edges against that book's line for that
+# market. Market-aware because BetMGM and Pinnacle pay ties in full on
+# placement markets (T5/T10/T20) but still apply dead-heat to 3-balls,
+# so they can't be added to a flat global set.
+# Keep in sync with schema.sql / book_rules by hand until we drive this
+# from the DB directly.
+NO_DEADHEAT_BOOKS_BY_MARKET: dict[str, set[str]] = {
+    "t5":  {"kalshi", "polymarket", "prophetx", "betmgm", "pinnacle"},
+    "t10": {"kalshi", "polymarket", "prophetx", "betmgm", "pinnacle"},
+    "t20": {"kalshi", "polymarket", "prophetx", "betmgm", "pinnacle"},
+}
+
+# Legacy flat set: union of every book exempt in at least one placement
+# market. Kept for back-compat with call sites that don't know the
+# market type. New code should prefer NO_DEADHEAT_BOOKS_BY_MARKET.
+NO_DEADHEAT_BOOKS: set[str] = set().union(*NO_DEADHEAT_BOOKS_BY_MARKET.values())
 
 # Public exchanges — continuously traded orderbooks, reliable during live play.
 # Sportsbook outrights go stale once rounds start and should not be used for

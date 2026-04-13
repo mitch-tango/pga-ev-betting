@@ -346,9 +346,13 @@ def calculate_placement_edges(
             actual_implied = 1.0 / bettable_decimal
             raw_edge = your_prob - actual_implied
 
-            # Per-book dead-heat adjustment: binary contract markets
-            # pay full value on ties, so no DH reduction needed
-            if book in config.NO_DEADHEAT_BOOKS:
+            # Per-book dead-heat adjustment. Binary-contract markets
+            # (kalshi/polymarket/prophetx) pay full value on ties, and
+            # some traditional books (BetMGM, Pinnacle) pay ties in full
+            # on placement markets while still applying dead-heat to
+            # 3-balls. The exemption set is scoped per market type.
+            exempt = config.NO_DEADHEAT_BOOKS_BY_MARKET.get(market_type, set())
+            if book in exempt:
                 adj_edge = raw_edge
                 dh_adj = 0.0
             else:
