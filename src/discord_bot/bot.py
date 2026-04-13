@@ -56,6 +56,10 @@ from src.pipeline.pull_live_edges import pull_live_edges
 from src.pipeline.pull_results import (
     fetch_results, fetch_archived_results, match_bets_to_results,
 )
+from src.core.novig_edge import evaluate_novig_lines, NovigMissingPlayer
+from src.core.novig_vision import (
+    extract_novig_screenshot, merge_extractions, NovigExtraction,
+)
 from src.core.arb import (
     arb_legs_to_candidates,
     detect_matchup_arbs, detect_3ball_arbs, format_arb_table, size_arb,
@@ -1838,6 +1842,263 @@ def _run_preround_scan(tour: str, round_number: int | None):
     return (all_candidates, tournament_id, display_name,
             bankroll, weekly_exposure, tournament_exposure, arbs,
             arb_leg_candidates)
+
+
+# ---------------------------------------------------------------------------
+# /novig — Claude-vision extraction of NoVig screenshots
+# ---------------------------------------------------------------------------
+
+
+def _run_novig_extraction_and_edges(
+    image_bytes_list: list[tuple[str, bytes, str]],   # (filename, bytes, media_type)
+    tour: str = "pga",
+) -> dict:
+    """Blocking worker: extract screenshots + pull DG + compute edges.
+
+    Runs via asyncio.to_thread from the /novig command. Returns a
+    summary dict suitable for embed rendering so the async caller never
+    touches DG pulls or the Claude API directly.
+
+    Extraction failures are non-fatal and reported per-image in the
+    summary so one bad screenshot doesn't sink an 8-image batch.
+    """
+    extractions: list[NovigExtraction] = []
+    extraction_errors: list[str] = []
+    for filename, data, media_type in image_bytes_list:
+        ext = extract_novig_screenshot(data, media_type=media_type)
+        if ext is None:
+            extraction_errors.append(filename)
+            continue
+        extractions.append(ext)
+
+    outright_lines, matchup_lines, seen_tournament_name = merge_extractions(
+        extractions,
+    )
+
+    if not outright_lines and not matchup_lines:
+        return {
+            "error": "no_lines_extracted",
+            "extraction_errors": extraction_errors,
+            "seen_tournament_name": seen_tournament_name,
+        }
+
+    # Pull DG data for whatever markets we actually need
+    bankroll = db.get_bankroll()
+    outrights = pull_all_outrights(None, tour)
+    tournament_name_dg = outrights.get("_event_name", "") or ""
+    is_live = outrights.get("_is_live", False)
+
+    # If the tournament is live, DG's baseline is stale — pull the
+    # live model and override the DG column in-place. This is the same
+    # pattern the live monitor uses in pull_live_edges.py.
+    if is_live:
+        try:
+            live_players = pull_live_predictions(None, tour)
+            if live_players:
+                from src.pipeline.pull_live_edges import _override_dg_with_live
+                _override_dg_with_live(outrights, live_players)
+        except Exception as e:
+            extraction_errors.append(f"live_predictions:{type(e).__name__}")
+
+    dg_tournament_matchups: list[dict] = []
+    dg_round_matchups: list[dict] = []
+    needs_tournament = any(
+        m.market_type == "tournament_matchup" for m in matchup_lines
+    )
+    needs_round = any(
+        m.market_type == "round_matchup" for m in matchup_lines
+    )
+    if needs_tournament:
+        try:
+            dg_tournament_matchups = pull_tournament_matchups(None, tour)
+        except Exception as e:
+            extraction_errors.append(f"dg_tournament_matchups:{type(e).__name__}")
+    if needs_round:
+        try:
+            dg_round_matchups = pull_round_matchups(None, tour)
+        except Exception as e:
+            extraction_errors.append(f"dg_round_matchups:{type(e).__name__}")
+
+    candidates, missing = evaluate_novig_lines(
+        outright_lines=outright_lines,
+        matchup_lines=matchup_lines,
+        dg_outrights=outrights,
+        dg_matchups=dg_tournament_matchups,
+        dg_round_matchups=dg_round_matchups,
+        bankroll=bankroll,
+    )
+
+    return {
+        "error": None,
+        "candidates": candidates,
+        "missing": missing,
+        "extraction_errors": extraction_errors,
+        "seen_tournament_name": seen_tournament_name,
+        "dg_tournament_name": tournament_name_dg,
+        "is_live": is_live,
+        "n_outright_lines": len(outright_lines),
+        "n_matchup_lines": len(matchup_lines),
+        "bankroll": bankroll,
+    }
+
+
+@bot.tree.command(
+    name="novig",
+    description="Extract NoVig screenshots and compute +EV vs DG model",
+)
+@app_commands.describe(
+    image1="NoVig screenshot (required)",
+    image2="Additional NoVig screenshot",
+    image3="Additional NoVig screenshot",
+    image4="Additional NoVig screenshot",
+    image5="Additional NoVig screenshot",
+    tour="Tour (default: pga)",
+)
+async def cmd_novig(
+    interaction: discord.Interaction,
+    image1: discord.Attachment,
+    image2: Optional[discord.Attachment] = None,
+    image3: Optional[discord.Attachment] = None,
+    image4: Optional[discord.Attachment] = None,
+    image5: Optional[discord.Attachment] = None,
+    tour: Optional[str] = "pga",
+):
+    await interaction.response.defer()
+
+    attachments = [a for a in (image1, image2, image3, image4, image5) if a]
+
+    # Download all images first, before hitting Claude. Reject any
+    # attachment that isn't a PNG/JPEG so we don't send mystery content
+    # to the vision API.
+    image_bytes_list: list[tuple[str, bytes, str]] = []
+    for att in attachments:
+        content_type = (att.content_type or "").lower()
+        if "png" in content_type:
+            media_type = "image/png"
+        elif "jpeg" in content_type or "jpg" in content_type:
+            media_type = "image/jpeg"
+        elif "webp" in content_type:
+            media_type = "image/webp"
+        else:
+            await interaction.followup.send(
+                f"Unsupported attachment type for `{att.filename}`: "
+                f"`{att.content_type or 'unknown'}`. Use PNG/JPEG/WebP."
+            )
+            return
+        try:
+            data = await att.read()
+        except Exception as e:
+            await interaction.followup.send(
+                f"Failed to download `{att.filename}`: {e}"
+            )
+            return
+        image_bytes_list.append((att.filename, data, media_type))
+
+    try:
+        summary = await asyncio.to_thread(
+            _run_novig_extraction_and_edges, image_bytes_list, tour,
+        )
+    except Exception as e:
+        log.error("novig worker failed: %s", e)
+        await interaction.followup.send(f"NoVig extraction failed: {e}")
+        return
+
+    if summary.get("error") == "no_lines_extracted":
+        parts = [
+            "No lines could be extracted from the screenshot(s)."
+        ]
+        if summary.get("extraction_errors"):
+            parts.append(
+                "Failed images: " + ", ".join(summary["extraction_errors"])
+            )
+        if summary.get("seen_tournament_name"):
+            parts.append(
+                f"(Extractor did see a tournament header: "
+                f"{summary['seen_tournament_name']})"
+            )
+        await interaction.followup.send("\n".join(parts))
+        return
+
+    candidates: list[CandidateBet] = summary["candidates"]
+    missing: list[NovigMissingPlayer] = summary["missing"]
+
+    # Cache as last_scan so /place can target NoVig lines by number
+    # (lines are display-only in the MVP but the numbering still lets
+    # the user say "tell me more about line 3" via /place in a pinch).
+    bot.last_scan = list(candidates)
+    bot.last_scan_time = datetime.now()
+
+    qualifying = [c for c in candidates if getattr(c, "qualifies", True)]
+    sub_threshold = len(candidates) - len(qualifying)
+    high_edge = [
+        c for c in qualifying if c.edge >= config.ALERT_HIGH_EDGE_THRESHOLD
+    ]
+
+    title_suffix = " (LIVE)" if summary.get("is_live") else ""
+    seen = summary.get("seen_tournament_name") or "NoVig"
+    dg_name = summary.get("dg_tournament_name") or "Unknown"
+
+    desc_lines = [
+        f"**{len(candidates)}** candidate lines across "
+        f"{summary.get('n_outright_lines', 0)} outright + "
+        f"{summary.get('n_matchup_lines', 0)} matchup extractions",
+    ]
+    if qualifying:
+        desc_lines.append(
+            f"**{len(qualifying)}** clear edge threshold "
+            f"({len(high_edge)} high-edge, {sub_threshold} info-only)"
+        )
+    desc_lines.append(
+        f"NoVig: {seen}  |  DG: {dg_name}  |  "
+        f"Bankroll: ${summary.get('bankroll', 0):,.2f}"
+    )
+
+    color = 0xE74C3C if high_edge else (0xE67E22 if qualifying else 0x95A5A6)
+    embed = discord.Embed(
+        title=f"NoVig Scan{title_suffix}",
+        description="\n".join(desc_lines),
+        color=color,
+        timestamp=datetime.now(),
+    )
+
+    file_to_send = None
+    if candidates:
+        img_path = await asyncio.to_thread(
+            _render_candidates_image, candidates,
+            f"NoVig Scan — {dg_name}{title_suffix}",
+        )
+        file_to_send = discord.File(img_path, filename="novig_scan.png")
+        embed.set_image(url="attachment://novig_scan.png")
+
+    # Report non-fatal issues: players Claude extracted that we
+    # couldn't match to DG records, and any images that failed
+    # extraction entirely. These are the user's signal for extraction
+    # errors vs genuine roster misses.
+    if missing:
+        lines = [
+            f"• {m.player_name} ({m.source})"
+            for m in missing[:10]
+        ]
+        if len(missing) > 10:
+            lines.append(f"• …and {len(missing) - 10} more")
+        embed.add_field(
+            name=f"⚠ {len(missing)} unmatched line(s)",
+            value="\n".join(lines),
+            inline=False,
+        )
+    if summary.get("extraction_errors"):
+        embed.add_field(
+            name="Extraction errors",
+            value=", ".join(summary["extraction_errors"]),
+            inline=False,
+        )
+
+    embed.set_footer(
+        text="MVP: decision-support only — NoVig bets are logged "
+             "manually via Supabase (no /place integration yet)"
+    )
+
+    await interaction.followup.send(embed=embed, file=file_to_send)
 
 
 # ---------------------------------------------------------------------------

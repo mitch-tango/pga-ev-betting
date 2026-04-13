@@ -84,7 +84,18 @@ unvalidated against a second data point. Revisit at end of RBC Heritage.
 
 - [x] **[P3] Market-aware dead-heat exemptions** — shipped 2026-04-13 (`cdfe66e`). Replaced flat `NO_DEADHEAT_BOOKS` with `NO_DEADHEAT_BOOKS_BY_MARKET`. Added BetMGM, Pinnacle, ProphetX to the placement-market exempt set (book_rules says they all pay ties in full but code was still haircutting them). On a T20 5% raw edge that's a 3.8pp restoration, which flips those candidates from "suppressed below threshold" to "surface as real edges."
 - [x] **[P3] Arb legs as placeable candidates** — shipped 2026-04-13. New `arb_legs_to_candidates()` helper in `src/core/arb.py` flattens each detected arb into per-leg `CandidateBet` rows (stakes populated via `size_arb`, sibling-leg metadata preserved in `all_book_odds`). Pretournament and preround scans persist legs with distinct `pretournament_arb` / `preround_arb` scan_types so +EV analytics views stay uncontaminated. Arb legs are appended to `bot.last_scan` so `/place <N>` targets a leg the same way as a +EV candidate; the scan image's arb table shows a `Legs` column with the continuing leg numbers (e.g., `11+12`). `/place` success embed now reminds the user about remaining sibling legs they still need to place. 8 new tests in `tests/test_arb.py`.
-- [ ] **[P3] NoVig integration** — see section 3a below. Blocked on user requesting OAuth credentials from NoVig.
+- [x] **[P3] NoVig direct API integration** — dropped 2026-04-13. NoVig's developer API requires a $30k deposit to unlock OAuth credentials, which isn't viable at the current bankroll. Replaced by NoVig screenshot ingestion (see items below).
+- [ ] **[P2] NoVig screenshot ingestion — MVP (in progress)** — On-demand `/novig` Discord command accepting up to 10 attachments. Claude Haiku vision extracts structured lines (market_type, side, player, odds, opponent). Auto live-vs-pretournament routing, fuzzy tournament matching with disambiguation, Yes + No side edge computation for outrights, matchups supported. Markets: Winner, Top 5, Top 10, Top 20, Make Cut, Tournament/Round Matchups. **MVP skips persistence** — computes edges directly against DG model and returns a rendered embed; user continues to log placed NoVig bets manually via Supabase (per existing memory note). Code structured so v2 persistence work is additive, not a rewrite.
+- [ ] **[P3] NoVig screenshot ingestion — v2 (full pipeline integration)** — Everything the MVP skips, broken out so we can defer until the MVP proves the screenshot flow is worth integrating:
+  - DB schema migration: add `side: str` column to `candidate_bets` and `bets` (for Yes/No exchange sides).
+  - `CandidateBet.side` field + `to_db_dict` + every downstream consumer (edge calc, display, settlement) updated to respect side.
+  - Settlement logic: a "No T20" bet wins when the player finishes OUTSIDE top-20; same inversion for each placement market. Needs test coverage parallel to existing `settle_*` tests.
+  - Synthetic `book="novig"` injection into the live DG pull so the existing pipeline (course-fit, expert-picks, correlation haircut, Kelly sizing) applies to NoVig lines automatically rather than being recomputed directly.
+  - `candidate_bets` persistence with `scan_type="novig_screenshot"` (plus `_live_` variant during rounds). Same supersede-prior pattern as the pretournament/preround scans.
+  - `/place <N>` integration so screenshot-extracted lines become placeable candidates, mutating `bot.last_scan` the same way a `/scan` does.
+  - Analytics view segmentation: exclude `*_screenshot` scan_types from the +EV ROI / calibration views by default; add a separate NoVig-only ROI view.
+  - Settlement-time reminder embed for NoVig bets ("bet placed at NoVig exchange — remember to settle manually if auto-settle doesn't match by player name").
+  - **Trigger for starting v2**: user has used the MVP enough to confirm the extraction + edge-surface is reliable and that persistence would remove real friction (vs. continuing the current manual logging pattern).
 - [ ] **[P4] Expand course profiles** — Only 8 of ~40+ PGA Tour venues have profiles. Build profiles for upcoming tournament venues using Betsperts course stats pages. Improves course-fit signal quality for data collection phase. Steady background work; not urgent mid-season.
 - [x] **[P0] Fix candidate→bet linkage** — shipped 2026-04-13 (commit `e98697a`). See "Post-Masters Fixes" above.
 - [x] **[P1] Masters auto-settlement recovered + permanent fixes** — shipped 2026-04-13 (commit `84a80b7`). See "Post-Masters Fixes" above.
@@ -95,7 +106,7 @@ unvalidated against a second data point. Revisit at end of RBC Heritage.
 **Things explicitly NOT next, even though they're tempting:**
 - Course-fit / expert-picks Kelly modifier **validation** — still needs 3-5 tournaments of joinable data. The P0 fix unblocks this for *new* tournaments but doesn't retroactively help the Masters (9 linked is fine for a first data point, not enough for validation).
 - Live edge calibration / dynamic threshold — same data dependency, plus still only 2 live candidates in the DB.
-- Pinnacle / PrizePicks direct integrations — lower marginal value than NoVig given NoVig is the user's actual venue.
+- Pinnacle / PrizePicks direct integrations — niche marginal value.
 
 ---
 
@@ -210,34 +221,26 @@ Expand beyond DG's aggregated feed:
 - PrizePicks / Underdog for player props
 - Integrate as additional book columns in the existing pipeline
 
-#### 3a. NoVig integration (exchange — placement markets & matchups)
-**Priority: High** | Effort: Low-Medium
+#### 3a. NoVig integration — dropped 2026-04-13
 
-NoVig is a real betting exchange (no vig, prices are directly bettable fair lines) and is the user's actual placement-bet venue, but it is currently **not pulled by any part of the pipeline**. Live scans during the Masters R4 surfaced this gap: T20 / round-matchup / 3-ball lines from NoVig were never seen by the scanner, so the user had to evaluate them by hand against the DG live model. The Odds API was considered as an aggregator shortcut and rejected — for golf it exposes only outright-winner sport keys, not placement markets or matchups, so it would leave the same gap.
+NoVig's developer API requires a $30k deposit on the platform to unlock
+OAuth credentials. Not viable at the current bankroll ($1,000). Plan
+archived rather than preserved here — see git history before 2026-04-13
+if it becomes relevant later (if NoVig drops the deposit floor or if
+bankroll grows enough to justify it).
 
-**What NoVig offers (per docs.novig.com):**
-- REST + GraphQL + WebSocket APIs, OAuth 2.0, OpenAPI 3.1 spec
-- Golf / PGA / futures and outright markets explicitly supported
-- Endpoints: `/event-types` → `/leagues` → `/events` → `/events/{eventId}/markets`
+The Odds API was reconsidered and still rejected for the same reason as
+before: golf coverage is winner-only, no placement markets or matchups,
+so it would not close the NoVig gap.
 
-**Integration plan (mirrors Kalshi / ProphetX):**
-1. `src/api/novig.py` — OAuth client (token refresh, REST helpers), shape modeled on `src/api/datagolf.py`
-2. `src/pipeline/pull_novig.py` — `pull_novig_outrights` returning `{"win", "top_5", "top_10", "top_20", "make_cut"}` and `merge_novig_into_outrights` adding a `"novig"` book key to each player record. Plus `pull_novig_matchups` / `merge_novig_into_matchups` for round matchups + 3-balls.
-3. Wire into `src/pipeline/pull_live_edges.py` step 4 (outrights) and step 7 (matchups) behind a `config.NOVIG_ENABLED` flag with try/except so a NoVig outage never breaks the rest of the scan.
-4. Treat NoVig as exchange-only in `calculate_placement_edges` (qualifies under `exchange_only=True`, same as ProphetX). This is the bit that makes it appear in the live scan path.
-5. Tests: `test_novig_pull.py` (fixture-based) + `test_novig_workflow.py` (mirrors Kalshi workflow test).
-
-**Risk areas to handle during build, not in plan:**
-- Player name normalization — NoVig will use "Patrick Reed" while DG uses "Reed, Patrick". Lean on / extend `src/pipeline/polymarket_matching.py` (already solved for Polymarket / Kalshi).
-- Bid vs ask side selection — exchange has two sides; default to the side you'd actually be hitting (ask for back bets), not the midpoint (midpoint is not tradeable).
-
-**Discovery spike before implementation:** once OAuth credentials are in hand, run a throwaway script that hits `/event-types` → `/leagues` → `/events` → `/events/{Masters}/markets` and dumps raw JSON for one win market, one T20 market, one round matchup, and one 3-ball. The whole integration design follows from those response shapes.
-
-**Blocked on:** user requesting NoVig developer API access (OAuth client_id + client_secret, dropped into `.env` as `NOVIG_CLIENT_ID` / `NOVIG_CLIENT_SECRET`).
-
-**Decision: not deep-plan-worthy** — pattern-following with two existing precedents (Kalshi, ProphetX) makes a sectioned plan low-value. Discovery spike → direct implementation → live validation.
-
-**Adjacent / not part of this:** The Odds API as a separate "broad book coverage" pull for cross-book line shopping on winner futures and CLV tagging across books we don't otherwise pull. Worth its own follow-up if/when winner-market line shopping becomes valuable; not a substitute for direct NoVig integration.
+Lighter substitute options currently under consideration:
+- On-demand `/evaluate` Discord command — user types in a NoVig line for
+  a specific player + market, bot returns edge / your_prob / suggested
+  stake against the DG model. Evaluates single lines, doesn't try to
+  mirror the NoVig board.
+- Manual `/novig` bulk entry — user types multiple NoVig lines in one
+  command, system creates candidate_bets tagged `book=novig` and runs
+  the full edge pipeline. More complete but higher per-scan effort.
 
 ### 4. Live Edge Calibration
 **Priority: High** | Effort: Medium

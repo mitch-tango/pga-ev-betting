@@ -183,6 +183,23 @@ a real tournament driving the pipeline end-to-end.
   - Decision point: after this tournament, P2 is either closed or
     needs another iteration.
 
+- [ ] **2.3a NoVig `/novig` command end-to-end**
+  - First real-world use of the Claude-vision NoVig screenshot flow
+    (see roadmap: NoVig screenshot ingestion — MVP).
+  - Drop 3-5 real RBC screenshots into the bot, verify extraction
+    accuracy against the source images (player names, Yes/No odds,
+    market type inference, round number detection for matchups).
+  - Verify live-vs-pretournament auto-routing — if triggered during a
+    round, DG column should be overridden with live predictions.
+  - Verify unmatched-player reports call out extraction errors vs.
+    roster misses (LIV players, field qualifiers).
+  - Confirm Yes + No side math looks sensible on a few manually-
+    checked candidates.
+  - Decision point after a few uses: does the MVP cover the decision-
+    support need, or do we need the v2 scope (persistence, /place,
+    full pipeline with course-fit / expert-picks / correlation)?
+    The answer drives whether to start v2 or leave it parked.
+
 - [ ] **2.4 Arb legs in the wild**
   - If any cross-book arbs trigger during scans, confirm:
     - `/place <N>` on a single leg succeeds.

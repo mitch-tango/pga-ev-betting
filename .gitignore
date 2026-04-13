@@ -15,6 +15,7 @@ venv/
 
 # Data cache
 data/raw/
+data/novig_samples/
 
 # IDE
 .vscode/
