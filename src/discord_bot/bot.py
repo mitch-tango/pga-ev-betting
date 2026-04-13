@@ -57,6 +57,7 @@ from src.pipeline.pull_results import (
     fetch_results, fetch_archived_results, match_bets_to_results,
 )
 from src.core.arb import (
+    arb_legs_to_candidates,
     detect_matchup_arbs, detect_3ball_arbs, format_arb_table, size_arb,
 )
 from src.core.settlement import settle_placement_bet
@@ -99,27 +100,34 @@ def _render_candidates_image(candidates, title: str, arbs=None) -> str:
             f"{c.edge*100:.1f}%", f"{bet_min*100:.0f}%", stake_str,
         ])
 
-    # Build arb table data
+    # Build arb table data. Each arb's legs get numbers that continue the
+    # candidate numbering (N+1, N+2, ...) so the user can /place a single
+    # leg via its row number, just like a regular +EV candidate. The
+    # `Legs` column shows the slash-joined leg numbers for the arb row.
     arb_data = []
+    leg_counter = len(cand_data) + 1
     if arbs:
-        for j, arb in enumerate(arbs, 1):
+        for arb in arbs:
             size_arb(arb, config.ARB_DEFAULT_RETURN)
             total_outlay = sum(leg.stake for leg in arb.legs)
             profit = config.ARB_DEFAULT_RETURN - total_outlay
+            leg_nums = [leg_counter + k for k in range(len(arb.legs))]
+            leg_counter += len(arb.legs)
+            legs_label = "+".join(str(n) for n in leg_nums)
             names = " v ".join(leg.player.split(",")[0][:14] for leg in arb.legs)
             legs = " / ".join(f"{leg.book[:8]}" for leg in arb.legs)
             # Escape $ so matplotlib mathtext doesn't treat "$...$" as math mode
             stakes = " / ".join(f"\\${leg.stake:.2f}" for leg in arb.legs)
             warn = "*" if arb.settlement_warning else ""
             arb_data.append([
-                str(j), names[:28], arb.market_type[:8], legs[:20],
+                legs_label, names[:28], arb.market_type[:8], legs[:20],
                 f"{arb.margin*100:.1f}%", stakes, f"${profit:.2f}{warn}",
             ])
 
     cand_columns = ["#", "Player", "Market", "Book", "Odds", "Model", "Book%", "Edge", "Min", "Stake"]
     cand_widths =  [0.04, 0.28,     0.08,     0.11,   0.08,   0.08,    0.08,    0.08,   0.06,  0.08]
-    arb_columns = ["#", "Players", "Market", "Books", "Margin", "Stakes", "Profit"]
-    arb_widths =  [0.04, 0.30,     0.10,     0.20,    0.08,     0.16,     0.12]
+    arb_columns = ["Legs", "Players", "Market", "Books", "Margin", "Stakes", "Profit"]
+    arb_widths =  [0.06,   0.28,     0.10,     0.20,    0.08,     0.16,     0.12]
 
     # Calculate figure height
     n_cand = max(len(cand_data), 1)  # at least 1 row for "no candidates" message
@@ -317,6 +325,24 @@ class EVBot(discord.Client):
             await self._run_and_alert("preround", round_number=round_number)
             fired_today.add(date_key)
 
+        # Catch-up: closing-odds capture on Thu-Sun. Tournament matchups
+        # only capture on Thursday (caller enforces this via the
+        # tournament_matchups flag below). If we start after the closing
+        # hour but before the preround hour, fire closing immediately so
+        # CLV snapshots land before bets are acted on.
+        if (weekday in (3, 4, 5, 6)
+                and now_et.hour > config.ALERT_CLOSING_HOUR
+                and now_et.hour < config.LIVE_MONITOR_END_HOUR):
+            date_key = f"closing_{now_et.date()}"
+            log.info("Catch-up: missed closing-odds capture, running now")
+            try:
+                await self._run_scheduled_closing_capture(
+                    is_thursday=(weekday == 3),
+                )
+                fired_today.add(date_key)
+            except Exception as e:
+                log.error("Startup closing catch-up failed: %s", e)
+
         # Catch-up: on every startup, run settlement once. If the previous
         # scheduled Sun 10pm ET run was missed (bot down or restarted), this
         # is what closes out last week's tournament. Safe as a no-op when
@@ -338,6 +364,19 @@ class EVBot(discord.Client):
                 key = f"pretournament_{today}"
                 if key not in fired_today:
                     await self._run_and_alert("pretournament")
+                    fired_today.add(key)
+
+            # Thu(3)-Sun(6) at closing hour → closing-odds capture.
+            # Tournament matchups are captured only on Thursday (one
+            # snapshot at R1 tee time is the "closing" line for bets
+            # that resolve after R4). Round matchups capture all four
+            # days so each round's closing line gets recorded.
+            if weekday in (3, 4, 5, 6) and now_et.hour == config.ALERT_CLOSING_HOUR:
+                key = f"closing_{today}"
+                if key not in fired_today:
+                    await self._run_scheduled_closing_capture(
+                        is_thursday=(weekday == 3),
+                    )
                     fired_today.add(key)
 
             # Thu(3)-Sun(6) at configured hour → pre-round scan
@@ -408,15 +447,23 @@ class EVBot(discord.Client):
             await channel.send(embed=embed)
             return
 
-        # Unpack — arbs added in later versions, default to empty
-        if len(result) == 7:
+        # Unpack — arbs added in later versions, arb_leg_candidates after
+        # that (arb legs get persisted as real CandidateBets and appended
+        # to last_scan so /place <N> can target them).
+        arb_leg_candidates: list[CandidateBet] = []
+        if len(result) == 8:
+            (candidates, tournament_id, tournament_name, bankroll,
+             weekly_exp, tourn_exp, arbs, arb_leg_candidates) = result
+        elif len(result) == 7:
             candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp, arbs = result
         else:
             candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
             arbs = []
 
-        # Cache for /place
-        self.last_scan = candidates
+        # Cache for /place. +EV candidates come first (numbered 1..N);
+        # arb legs continue the numbering (N+1..N+M) in the order legs
+        # are emitted by arb_legs_to_candidates.
+        self.last_scan = list(candidates) + list(arb_leg_candidates)
         self.last_scan_tournament_id = tournament_id
         self.last_scan_time = datetime.now()
 
@@ -624,6 +671,118 @@ class EVBot(discord.Client):
         await channel.send(embed=embed)
         self._summary_posted_for.add(tournament_id)
         log.info("Posted tournament summary for %s", tournament_id)
+
+    # ------------------------------------------------------------------
+    # Scheduled closing-odds capture
+    # ------------------------------------------------------------------
+    async def _run_scheduled_closing_capture(
+        self, *, is_thursday: bool, channel=None,
+    ):
+        """Capture closing odds for CLV tracking and post summary.
+
+        Runs Thu-Sun at ALERT_CLOSING_HOUR ET. On Thursday, also
+        captures tournament-matchup closing lines (one-shot per
+        tournament — see validation_plan.md fix #2).
+        """
+        from src.pipeline.pull_closing import run_closing_capture
+
+        if channel is None:
+            channel = self.get_channel(config.DISCORD_ALERT_CHANNEL_ID)
+        if not channel:
+            log.warning("Closing capture: alert channel not found")
+            return
+
+        log.info("Running scheduled closing-odds capture (is_thursday=%s)",
+                 is_thursday)
+        try:
+            summary = await asyncio.to_thread(
+                run_closing_capture,
+                tour="pga",
+                tournament_slug=None,
+                tournament_id_override=None,
+                capture_matchups=True,
+                capture_tournament_matchups=is_thursday,
+            )
+        except Exception as e:
+            log.error("Closing capture failed: %s", e)
+            try:
+                await channel.send(
+                    f":warning: Scheduled closing-odds capture failed: "
+                    f"`{type(e).__name__}: {str(e)[:200]}`"
+                )
+            except Exception:
+                pass
+            return
+
+        stored = summary.get("total_snapshots_stored", 0)
+        matched = summary.get("bets_matched", 0)
+        errors = summary.get("errors") or []
+
+        color = 0x95A5A6
+        if stored and not errors:
+            color = 0x2ECC71  # green
+        elif errors:
+            color = 0xE67E22  # orange
+
+        embed = discord.Embed(
+            title=f"Closing Odds Capture — {summary.get('tournament_name', 'Unknown')}",
+            color=color,
+            timestamp=datetime.now(),
+        )
+        embed.add_field(
+            name="Outrights",
+            value=str(summary.get("outright_snapshots", 0)),
+            inline=True,
+        )
+        embed.add_field(
+            name="Round matchups",
+            value=str(summary.get("round_matchup_snapshots", 0)),
+            inline=True,
+        )
+        embed.add_field(
+            name="3-balls",
+            value=str(summary.get("three_ball_snapshots", 0)),
+            inline=True,
+        )
+        if summary.get("captured_tournament_matchups"):
+            embed.add_field(
+                name="Tournament matchups (R1 closing)",
+                value=str(summary.get("tournament_matchup_snapshots", 0)),
+                inline=True,
+            )
+        embed.add_field(
+            name="Stored",
+            value=str(stored),
+            inline=True,
+        )
+        embed.add_field(
+            name="Bets newly CLV-matched",
+            value=str(matched),
+            inline=True,
+        )
+
+        if summary.get("clv_bets_total"):
+            avg = summary.get("avg_clv_pct")
+            avg_str = f"{avg:+.2f}%" if avg is not None else "—"
+            embed.add_field(
+                name="CLV (tournament-wide)",
+                value=(
+                    f"{summary['clv_bets_total']} bets | avg {avg_str} | "
+                    f"{summary['positive_clv']} positive"
+                ),
+                inline=False,
+            )
+
+        if errors:
+            embed.add_field(
+                name="Non-fatal errors",
+                value="```\n" + ", ".join(errors) + "\n```",
+                inline=False,
+            )
+
+        await channel.send(embed=embed)
+        log.info("Closing capture posted: %d snapshots, %d CLV updates",
+                 stored, matched)
 
     # ------------------------------------------------------------------
     # Scheduled settlement
@@ -872,6 +1031,8 @@ async def cmd_alert(
             f"**Channel:** <#{config.DISCORD_ALERT_CHANNEL_ID}>" if config.DISCORD_ALERT_CHANNEL_ID else "**Channel:** not set",
             f"**High-edge threshold:** {config.ALERT_HIGH_EDGE_THRESHOLD*100:.0f}%",
             f"**Pre-tournament:** Wed {config.ALERT_PRETOURNAMENT_HOUR}:00 ET",
+            f"**Closing capture:** Thu-Sun {config.ALERT_CLOSING_HOUR}:00 ET "
+            f"(tournament matchups: Thu only)",
             f"**Pre-round:** Thu-Sun {config.ALERT_PREROUND_HOUR}:00 ET",
             f"**Current time (ET):** {now_et.strftime('%A %H:%M')}",
         ]
@@ -1215,15 +1376,21 @@ async def cmd_scan(
         )
         return
 
-    # Unpack — arbs added in later versions, default to empty
-    if len(result) == 7:
+    # Unpack — arbs added in later versions, arb_leg_candidates after that.
+    arb_leg_candidates: list[CandidateBet] = []
+    if len(result) == 8:
+        (candidates, tournament_id, tournament_name, bankroll,
+         weekly_exp, tourn_exp, arbs, arb_leg_candidates) = result
+    elif len(result) == 7:
         candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp, arbs = result
     else:
         candidates, tournament_id, tournament_name, bankroll, weekly_exp, tourn_exp = result
         arbs = []
 
-    # Cache for /place
-    bot.last_scan = candidates
+    # Cache for /place. +EV candidates are 1..N in the rendered image;
+    # arb legs continue as N+1..N+M so a single /place <num> can target
+    # any leg.
+    bot.last_scan = list(candidates) + list(arb_leg_candidates)
     bot.last_scan_tournament_id = tournament_id
     bot.last_scan_time = datetime.now()
 
@@ -1436,13 +1603,22 @@ def _run_pretournament_scan(tour: str):
     # Arbitrage scan on matchups
     arbs = detect_matchup_arbs(matchups, market_type="tournament_matchup") if matchups else []
 
+    # Persist each arb leg as its own candidate so /place can target it the
+    # same way as a +EV candidate. Distinct scan_type keeps arb rows out of
+    # +EV analytics views (filter by scan_type NOT LIKE '%\_arb').
+    arb_leg_candidates = arb_legs_to_candidates(arbs) if arbs else []
+    if arb_leg_candidates:
+        resolve_candidates(arb_leg_candidates, source="datagolf")
+        db.persist_candidates(arb_leg_candidates, tournament_id, "pretournament_arb")
+
     tournament_exposure = sum(
         b.get("stake", 0) for b in existing_bets
         if b.get("tournament_id") == tournament_id
     )
 
     return (all_candidates, tournament_id, tournament_name,
-            bankroll, weekly_exposure, tournament_exposure, arbs)
+            bankroll, weekly_exposure, tournament_exposure, arbs,
+            arb_leg_candidates)
 
 
 def _build_tournament_summary(tournament_id: str) -> discord.Embed | None:
@@ -1646,6 +1822,11 @@ def _run_preround_scan(tour: str, round_number: int | None):
         arbs.extend(detect_3ball_arbs(three_balls, round_number=round_number))
     arbs.sort(key=lambda a: a.margin, reverse=True)
 
+    arb_leg_candidates = arb_legs_to_candidates(arbs) if arbs else []
+    if arb_leg_candidates:
+        resolve_candidates(arb_leg_candidates, source="datagolf")
+        db.persist_candidates(arb_leg_candidates, tournament_id, "preround_arb")
+
     tournament_exposure = sum(
         b.get("stake", 0) for b in existing_bets
         if b.get("tournament_id") == tournament_id
@@ -1655,7 +1836,8 @@ def _run_preround_scan(tour: str, round_number: int | None):
     display_name = f"{tournament_name}{rnd_str}"
 
     return (all_candidates, tournament_id, display_name,
-            bankroll, weekly_exposure, tournament_exposure, arbs)
+            bankroll, weekly_exposure, tournament_exposure, arbs,
+            arb_leg_candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -1772,6 +1954,32 @@ async def cmd_place(
     embed.add_field(name="Edge", value=f"{actual_edge*100:.1f}%", inline=True)
     embed.add_field(name="Stake", value=f"${actual_stake:,.0f}", inline=True)
     embed.add_field(name="Bankroll", value=f"${bankroll:,.2f}", inline=False)
+
+    # If this candidate was an arb leg, remind the user about the sibling
+    # legs they still need to place to lock in the arb. Arb-origin
+    # metadata lives in all_book_odds (populated by arb_legs_to_candidates).
+    arb_meta = (c.all_book_odds or {}) if isinstance(c.all_book_odds, dict) else {}
+    arb_legs_meta = arb_meta.get("arb_legs")
+    if arb_legs_meta:
+        this_idx = arb_meta.get("arb_leg_index", 0)
+        siblings = [
+            (k, leg) for k, leg in enumerate(arb_legs_meta) if k != this_idx
+        ]
+        if siblings:
+            lines = []
+            for k, leg in siblings:
+                lines.append(
+                    f"• Leg {k + 1}: {leg.get('player', '?').split(',')[0]} "
+                    f"@ {leg.get('book', '?')} "
+                    f"({leg.get('odds_decimal', 0):.2f}) — "
+                    f"${leg.get('stake', 0):.2f}"
+                )
+            margin = arb_meta.get("arb_margin", 0) * 100
+            embed.add_field(
+                name=f"⚠ Arb leg {this_idx + 1}/{len(arb_legs_meta)} — place remaining legs for {margin:.1f}% guaranteed",
+                value="\n".join(lines),
+                inline=False,
+            )
 
     await interaction.followup.send(embed=embed)
 

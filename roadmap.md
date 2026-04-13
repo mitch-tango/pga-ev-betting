@@ -1,6 +1,6 @@
 # PGA +EV Betting System — Roadmap
 
-Last updated: 2026-04-13 (post-Masters audit resolved — P0/P1 shipped)
+Last updated: 2026-04-13 (post-Masters audit resolved — P0/P1 shipped; P3 arb-legs + dead-heat exemptions shipped)
 
 ## Completed
 
@@ -83,7 +83,7 @@ unvalidated against a second data point. Revisit at end of RBC Heritage.
 ## Quick Wins / To-Do
 
 - [x] **[P3] Market-aware dead-heat exemptions** — shipped 2026-04-13 (`cdfe66e`). Replaced flat `NO_DEADHEAT_BOOKS` with `NO_DEADHEAT_BOOKS_BY_MARKET`. Added BetMGM, Pinnacle, ProphetX to the placement-market exempt set (book_rules says they all pay ties in full but code was still haircutting them). On a T20 5% raw edge that's a 3.8pp restoration, which flips those candidates from "suppressed below threshold" to "surface as real edges."
-- [ ] **[P3] Arb legs as placeable candidates** — Log each arb leg as a candidate bet when detected so they're selectable via `/place` like regular candidates. Currently arbs are display-only in scan output.
+- [x] **[P3] Arb legs as placeable candidates** — shipped 2026-04-13. New `arb_legs_to_candidates()` helper in `src/core/arb.py` flattens each detected arb into per-leg `CandidateBet` rows (stakes populated via `size_arb`, sibling-leg metadata preserved in `all_book_odds`). Pretournament and preround scans persist legs with distinct `pretournament_arb` / `preround_arb` scan_types so +EV analytics views stay uncontaminated. Arb legs are appended to `bot.last_scan` so `/place <N>` targets a leg the same way as a +EV candidate; the scan image's arb table shows a `Legs` column with the continuing leg numbers (e.g., `11+12`). `/place` success embed now reminds the user about remaining sibling legs they still need to place. 8 new tests in `tests/test_arb.py`.
 - [ ] **[P3] NoVig integration** — see section 3a below. Blocked on user requesting OAuth credentials from NoVig.
 - [ ] **[P4] Expand course profiles** — Only 8 of ~40+ PGA Tour venues have profiles. Build profiles for upcoming tournament venues using Betsperts course stats pages. Improves course-fit signal quality for data collection phase. Steady background work; not urgent mid-season.
 - [x] **[P0] Fix candidate→bet linkage** — shipped 2026-04-13 (commit `e98697a`). See "Post-Masters Fixes" above.

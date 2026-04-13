@@ -92,8 +92,43 @@ def insert_candidates(candidates: list[dict]) -> list[dict]:
     return result.data
 
 
+def mark_superseded_pending(
+    tournament_id: str,
+    scan_type: str,
+    reason: str = "superseded_by_new_scan",
+) -> int:
+    """Mark prior pending candidates for (tournament, scan_type) as skipped.
+
+    Called at the start of a new scan batch so that re-running a
+    pretournament/preround scan doesn't leave ever-growing stale
+    `status='pending'` rows from earlier runs polluting
+    `v_candidate_fill_rate`. Each scan batch should own its own window
+    of pending rows — anything older for the same (tournament, scan_type)
+    is by definition superseded once a new batch lands.
+
+    Intentionally *not* called for live scans: the live monitor runs
+    every 15 min and prior pendings are still actionable within the
+    round, so auto-expiring them would defeat the cache.
+
+    Returns the number of rows transitioned pending → skipped.
+    """
+    if not tournament_id or not scan_type:
+        return 0
+    result = client().table("candidate_bets").update({
+        "status": "skipped",
+        "skip_reason": reason,
+    }).eq("tournament_id", tournament_id).eq(
+        "scan_type", scan_type
+    ).eq("status", "pending").execute()
+    return len(result.data or [])
+
+
+_SUPERSEDE_SCAN_TYPE_PREFIXES = ("pretournament", "preround")
+
+
 def persist_candidates(candidates, tournament_id: str | None,
-                       scan_type: str) -> int:
+                       scan_type: str,
+                       supersede_prior: bool | None = None) -> int:
     """Insert a batch of CandidateBet objects and attach their new DB ids.
 
     Mutates each candidate in place by setting ``candidate_id`` to the row
@@ -103,10 +138,21 @@ def persist_candidates(candidates, tournament_id: str | None,
     opponent_2_name, round_number), which is unique within a single scan
     because ``calculate_*_edges`` dedupes on that key.
 
+    If ``supersede_prior`` is True (default for pretournament/preround
+    scan_types, including the ``*_arb`` variants), any prior pending rows
+    for the same (tournament, scan_type) are marked ``skipped`` with
+    reason ``superseded_by_new_scan`` before the new batch is inserted.
+    Live scan_types opt out by default.
+
     Returns the number of rows successfully inserted.
     """
     if not candidates or not tournament_id:
         return 0
+
+    if supersede_prior is None:
+        supersede_prior = scan_type.startswith(_SUPERSEDE_SCAN_TYPE_PREFIXES)
+    if supersede_prior:
+        mark_superseded_pending(tournament_id, scan_type)
 
     rows = [c.to_db_dict(tournament_id, scan_type) for c in candidates]
     inserted = insert_candidates(rows)

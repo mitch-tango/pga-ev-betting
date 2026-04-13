@@ -12,7 +12,8 @@ Runs alongside the existing +EV edge detection — same data, separate output.
 from dataclasses import dataclass, field
 from itertools import product
 
-from src.core.devig import parse_american_odds, american_to_decimal
+from src.core.devig import parse_american_odds, american_to_decimal, decimal_to_american
+from src.core.edge import CandidateBet
 from src.db import supabase_client as db
 import config
 
@@ -202,6 +203,83 @@ def detect_3ball_arbs(
     arbs = _dedupe_arbs(arbs)
     arbs.sort(key=lambda a: a.margin, reverse=True)
     return arbs
+
+
+def arb_legs_to_candidates(
+    arbs: list[ArbOpportunity],
+    total_return: float | None = None,
+) -> list[CandidateBet]:
+    """Flatten detected arbs into per-leg CandidateBet rows.
+
+    Each leg becomes a standalone candidate so it can be persisted to
+    `candidate_bets` and picked up by Discord `/place` the same way a
+    regular +EV candidate is. The full arb (margin, sibling legs,
+    settlement warnings) is preserved in `all_book_odds` so placement and
+    settlement paths can reconstruct the opportunity a leg belongs to.
+
+    Sizes each arb via `size_arb(total_return)` as a side effect so the
+    `suggested_stake` on each returned leg matches what gets displayed in
+    the scan embed. Set `qualifies=True` and `edge=margin` so legs clear
+    the /place "info-only" gate but analytics that filter by scan_type can
+    still separate arb legs from +EV candidates.
+    """
+    ret = total_return if total_return is not None else config.ARB_DEFAULT_RETURN
+    result: list[CandidateBet] = []
+
+    for arb in arbs:
+        size_arb(arb, ret)
+        total_outlay = sum(leg.stake for leg in arb.legs)
+        profit = round(ret - total_outlay, 2)
+
+        leg_meta = [
+            {
+                "player": leg.player,
+                "book": leg.book,
+                "odds_decimal": leg.odds_decimal,
+                "stake": leg.stake,
+            }
+            for leg in arb.legs
+        ]
+
+        for leg_idx, leg in enumerate(arb.legs):
+            others = [
+                arb.legs[k].player
+                for k in range(len(arb.legs))
+                if k != leg_idx
+            ]
+            opponent_name = others[0] if len(others) >= 1 else None
+            opponent_2_name = others[1] if len(others) >= 2 else None
+
+            result.append(CandidateBet(
+                market_type=arb.market_type,
+                player_name=leg.player,
+                opponent_name=opponent_name,
+                opponent_2_name=opponent_2_name,
+                round_number=arb.round_number,
+                your_prob=leg.implied_prob,
+                best_book=leg.book,
+                best_odds_decimal=leg.odds_decimal,
+                best_odds_american=decimal_to_american(leg.odds_decimal) or "",
+                best_implied_prob=leg.implied_prob,
+                raw_edge=arb.margin,
+                edge=arb.margin,
+                suggested_stake=leg.stake,
+                kelly_fraction=None,
+                correlation_haircut=1.0,
+                qualifies=True,
+                bet_min_edge=0.0,
+                all_book_odds={
+                    "arb_margin": arb.margin,
+                    "arb_combined_implied": arb.combined_implied,
+                    "arb_profit": profit,
+                    "arb_total_return": ret,
+                    "arb_settlement_warning": arb.settlement_warning,
+                    "arb_legs": leg_meta,
+                    "arb_leg_index": leg_idx,
+                },
+            ))
+
+    return result
 
 
 def size_arb(arb: ArbOpportunity, total_return: float) -> list[ArbLeg]:

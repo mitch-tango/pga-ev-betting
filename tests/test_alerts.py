@@ -27,6 +27,10 @@ class TestAlertConfig:
     def test_alert_schedule_hours(self):
         assert config.ALERT_PRETOURNAMENT_HOUR == 18
         assert config.ALERT_PREROUND_HOUR == 7
+        # Closing capture must fire before pre-round so CLV snapshots
+        # exist before any bet is acted on.
+        assert config.ALERT_CLOSING_HOUR < config.ALERT_PREROUND_HOUR
+        assert config.ALERT_CLOSING_HOUR == 6
 
     def test_high_edge_threshold(self):
         assert 0.0 < config.ALERT_HIGH_EDGE_THRESHOLD < 1.0
@@ -73,6 +77,53 @@ class TestAlertScheduleLogic:
     def test_preround_skips_wrong_hour(self):
         should, _ = self._should_preround(3, 12)
         assert should is False
+
+    @staticmethod
+    def _should_closing_capture(weekday: int, hour: int) -> tuple[bool, bool]:
+        """Mirror the scheduler's closing-capture check.
+
+        Returns (should_run, is_thursday). The is_thursday flag drives
+        whether tournament-matchup closing lines are captured (one-shot
+        per tournament — see validation_plan.md fix #2).
+        """
+        if weekday in (3, 4, 5, 6) and hour == config.ALERT_CLOSING_HOUR:
+            return True, weekday == 3
+        return False, False
+
+    def test_closing_capture_fires_thu_thru_sun(self):
+        for weekday in (3, 4, 5, 6):
+            should, _ = self._should_closing_capture(
+                weekday, config.ALERT_CLOSING_HOUR,
+            )
+            assert should is True, f"Should fire on weekday {weekday}"
+
+    def test_closing_capture_only_pulls_tournament_matchups_on_thursday(self):
+        _, thu = self._should_closing_capture(3, config.ALERT_CLOSING_HOUR)
+        assert thu is True
+        for weekday in (4, 5, 6):
+            _, flag = self._should_closing_capture(
+                weekday, config.ALERT_CLOSING_HOUR,
+            )
+            assert flag is False, (
+                f"Weekday {weekday} must not capture tournament matchups "
+                f"(they would double-snapshot)"
+            )
+
+    def test_closing_capture_skips_mon_tue_wed(self):
+        for day in (0, 1, 2):
+            should, _ = self._should_closing_capture(
+                day, config.ALERT_CLOSING_HOUR,
+            )
+            assert should is False
+
+    def test_closing_capture_skips_wrong_hour(self):
+        should, _ = self._should_closing_capture(3, 12)
+        assert should is False
+
+    def test_closing_precedes_preround(self):
+        """The scheduler must run closing capture before preround scan
+        so CLV snapshots exist before bets are acted on."""
+        assert config.ALERT_CLOSING_HOUR < config.ALERT_PREROUND_HOUR
 
 
 class TestAlertEmbedLogic:

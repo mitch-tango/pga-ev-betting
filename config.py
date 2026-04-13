@@ -102,6 +102,7 @@ DISCORD_ALERT_ROLE_ID = int(os.getenv("DISCORD_ALERT_ROLE_ID", "0"))  # Role to 
 # Pre-round scans run each morning Thu-Sun.
 ALERT_PRETOURNAMENT_HOUR = 18   # 6 PM ET Wednesday
 ALERT_PREROUND_HOUR = 7        # 7 AM ET Thu-Sun
+ALERT_CLOSING_HOUR = 6         # 6 AM ET Thu-Sun — closing-odds capture (CLV)
 ALERT_SETTLEMENT_HOUR = 22     # 10 PM ET Thu-Sun
 ALERT_HIGH_EDGE_THRESHOLD = 0.08  # 8%+ edge gets @role mention
 ALERT_ENABLED = bool(os.getenv("DISCORD_ALERT_CHANNEL_ID", ""))

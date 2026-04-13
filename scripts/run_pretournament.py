@@ -43,7 +43,7 @@ from src.parsers.start_matchups import parse_start_matchups_from_file
 from src.parsers.start_outrights import parse_start_outrights_from_file
 from src.parsers.start_merger import merge_start_into_matchups, merge_start_into_outrights
 from src.core.edge import calculate_placement_edges, calculate_matchup_edges
-from src.core.arb import detect_matchup_arbs, format_arb_table
+from src.core.arb import arb_legs_to_candidates, detect_matchup_arbs, format_arb_table
 from src.core.devig import american_to_decimal, decimal_to_american, parse_american_odds
 from src.normalize.players import resolve_candidates
 from src.db import supabase_client as db
@@ -115,6 +115,14 @@ def insert_all_candidates(candidates, tournament_id, scan_type="pretournament"):
     """Insert all candidates to DB and return a lookup dict keyed by candidate key."""
     if not candidates or not tournament_id:
         return {}
+
+    # Re-running a scan for the same (tournament, scan_type) supersedes
+    # any previous pending rows — mark them skipped before inserting the
+    # new batch so the fill-rate view stays honest.
+    superseded = db.mark_superseded_pending(tournament_id, scan_type)
+    if superseded:
+        print(f"  Superseded {superseded} prior pending "
+              f"{scan_type} candidate(s) from earlier run")
 
     rows = [c.to_db_dict(tournament_id, scan_type) for c in candidates]
     inserted = db.insert_candidates(rows)
@@ -594,12 +602,19 @@ def main():
     )
 
     # ---- Arbitrage scan ----
+    arbs = []
+    arb_leg_candidates = []
     if matchups:
         print("\nScanning for cross-book arbitrage...")
         arbs = detect_matchup_arbs(matchups, market_type="tournament_matchup")
         if arbs:
             print(f"\n  {len(arbs)} arbitrage opportunit{'y' if len(arbs) == 1 else 'ies'} found:\n")
             print(format_arb_table(arbs))
+            # Flatten each arb into per-leg CandidateBet rows so the CLI
+            # path persists arbs the same way the Discord scan does.
+            arb_leg_candidates = arb_legs_to_candidates(arbs)
+            if arb_leg_candidates:
+                resolve_candidates(arb_leg_candidates, source="datagolf")
         else:
             print("  No matchup arbs found.")
 
@@ -613,6 +628,16 @@ def main():
         candidate_lookup = insert_all_candidates(
             all_candidates, tournament_id, scan_type="pretournament"
         )
+
+    # Persist arb legs under a distinct scan_type so +EV analytics views
+    # can filter them out. Arb legs are appended to the interactive list
+    # below so the user can place them via the same numeric selector.
+    if not args.dry_run and arb_leg_candidates and tournament_id:
+        arb_lookup = insert_all_candidates(
+            arb_leg_candidates, tournament_id, scan_type="pretournament_arb"
+        )
+        candidate_lookup.update(arb_lookup)
+        all_candidates = list(all_candidates) + list(arb_leg_candidates)
 
     # ---- Interactive Bet Placement ----
     if not args.dry_run and all_candidates:
