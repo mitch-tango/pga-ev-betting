@@ -1,6 +1,6 @@
 # PGA +EV Betting System — Roadmap
 
-Last updated: 2026-04-12
+Last updated: 2026-04-12 (post-Masters data audit)
 
 ## Completed
 
@@ -24,14 +24,86 @@ Last updated: 2026-04-12
 
 ---
 
+## Post-Masters Data Audit (2026-04-12)
+
+Direct Supabase query after the Masters revealed the system is accumulating
+much less actionable data than the roadmap assumed. **Three findings, one of
+them is a silent bug that breaks every downstream validation phase.**
+
+**Snapshot at end of Masters week:**
+- `candidate_bets`: **68 rows**, 1 tournament, 66 pretournament + **only 2 live**
+  - Markets: 56 make-cut, 6 T20, 5 tournament matchup, 1 round matchup
+  - Course-fit signal coverage: 66/68 (97% — works as intended)
+- `bets`: **13 rows**, $187 total stake, 1 tournament
+  - **0 settled** (every row has `outcome = NULL`)
+  - **0 of 13 linked to a candidate** (every row has `candidate_id = NULL`)
+  - 8/13 have `closing_odds_decimal` set (CLV partial coverage)
+
+### P0: Fix the candidate→bet linkage (silent data-pipeline bug)
+**Priority: Critical** | Effort: Low (probably)
+
+The "Completed" entry that says *"All candidates inserted to DB before
+placement, linked to bets via candidate_id, skip reasons tracked"* is not
+actually working. Every bet in the database has `candidate_id = NULL`. The
+candidate rows exist (68 of them) and the bet rows exist (13 of them), but
+nothing is connecting the two. **This kills every downstream validation
+analysis on this roadmap**, because each one needs to join `bets.outcome`
+back to `candidate_bets.<signal>`:
+
+| Roadmap item | Required join | Currently possible? |
+|---|---|---|
+| Course-fit Kelly modifier validation | `bet.outcome ↔ candidate.coursefit_signal` | No |
+| Expert-picks signal validation | `bet.outcome ↔ candidate.expert_signal` | No |
+| Live edge calibration | live `candidate ↔ bet placed` | No (and only 2 live candidates exist) |
+| Tranche weight live evaluation | `bet.outcome ↔ candidate.tranche` | No |
+| Per-book sharpness live eval | `bet.outcome ↔ candidate.all_book_odds` | No |
+
+**Until this is fixed, accumulating more tournaments is wasted effort** — we
+just stockpile unjoinable rows. This is the highest-leverage thing in the
+repo right now and is almost certainly a small fix once located. Trace the
+`/place` flow and `_run_and_alert` paths to find where `candidate_id` is
+supposed to be attached on insert and why it isn't.
+
+### P1: Verify Masters auto-settlement actually fires
+**Priority: High** | Effort: Investigation only
+
+`bets.outcome` is `NULL` on all 13 Masters bets. The Masters R4 just ended
+~7 PM ET tonight, so the most charitable read is the auto-settlement loop
+hasn't run yet. The less charitable read is that auto-settlement (listed as
+"Completed" in this roadmap) hasn't actually been firing for the Masters at
+all. Either way, this needs verification: check tomorrow morning whether
+outcomes have been backfilled, and if not, dig into the settlement scheduler.
+Same general failure mode as the staleness filter we found today — feature is
+"shipped" but not actually exercising the code path it claims to.
+
+### P2: Live monitoring volume audit
+**Priority: Medium** | Effort: Investigation only
+
+Only **2 live-scan candidates** in the entire database for the entire Masters.
+That number was always going to be small because of the staleness-filter bug
+(silently no-op until ~14:10 today, so live scans during R1-R3 surfaced
+nothing because the round-matchup filter was kept off). But it's worth a
+post-mortem next tournament to confirm the heartbeat fix and the staleness
+fix actually push that number into the dozens.
+
+---
+
 ## Quick Wins / To-Do
 
-- [ ] **Expand course profiles** — Only 8 of ~40+ PGA Tour venues have profiles. Build profiles for upcoming tournament venues using Betsperts course stats pages. Improves course-fit signal quality for data collection phase.
-- [ ] **Run `scripts/status.py` health check** — Check current data volumes (settled bets, CLV coverage %, fill rates) to gauge how close Phase 3 validation items are.
-- [ ] **Verify candidate lifecycle end-to-end** — Run a pretournament scan (dry-run or real) and confirm candidates are inserted, linked, and skip-tracked correctly in Supabase.
-- [ ] **Arb legs as placeable candidates** — Log each arb leg as a candidate bet when detected so they're selectable via `/place` like regular candidates. Currently arbs are display-only in scan output.
-- [ ] **Market-aware dead-heat exemptions** — BetMGM and Pinnacle pay ties in full on placement markets (T5/T10/T20) but still apply dead-heat to 3-balls. `NO_DEADHEAT_BOOKS` config needs to become market-type-aware so edge calculator doesn't penalize these books on placements. Could surface currently-hidden edges.
+- [ ] **[P0] Fix candidate→bet linkage** — see Post-Masters Data Audit above. Highest-leverage item in the repo right now; blocks every validation phase listed under "Next Up." Trace `/place` and the live-monitor scan path to find where `candidate_id` is supposed to attach.
+- [ ] **[P1] Verify Masters auto-settlement** — confirm `bets.outcome` gets backfilled now that R4 has finished. If not, fix the settlement scheduler.
+- [ ] **[P3] NoVig integration** — see section 3a below. Blocked on user requesting OAuth credentials from NoVig.
+- [ ] **[P3] Market-aware dead-heat exemptions** — BetMGM and Pinnacle pay ties in full on placement markets (T5/T10/T20) but still apply dead-heat to 3-balls. `NO_DEADHEAT_BOOKS` config needs to become market-type-aware so edge calculator doesn't penalize these books on placements. Could surface currently-hidden edges. Best item to do tonight if waiting on NoVig and the P0/P1 work is in flight.
+- [ ] **[P3] Arb legs as placeable candidates** — Log each arb leg as a candidate bet when detected so they're selectable via `/place` like regular candidates. Currently arbs are display-only in scan output.
+- [ ] **[P4] Expand course profiles** — Only 8 of ~40+ PGA Tour venues have profiles. Build profiles for upcoming tournament venues using Betsperts course stats pages. Improves course-fit signal quality for data collection phase. Steady background work; not urgent mid-season.
+- [x] **Run `scripts/status.py` health check** — Done via direct Supabase query 2026-04-12; results captured in Post-Masters Data Audit section above.
+- [x] **Verify candidate lifecycle end-to-end** — Done via direct Supabase query 2026-04-12. Result: lifecycle is broken. See P0 above.
 - [x] **Book settlement rules** — Loaded 78 rules across 14 books/exchanges into Supabase. Start rules still unknown (no public page).
+
+**Things explicitly NOT next, even though they're tempting:**
+- Course-fit / expert-picks Kelly modifiers — need 3-5 tournaments of *joinable* data, which we won't have until the P0 candidate→bet link is fixed AND a few more tournaments roll through
+- Live edge calibration / dynamic threshold — same data dependency, plus we have only 2 live candidates total
+- Pinnacle / PrizePicks direct integrations — lower marginal value than NoVig given NoVig is the user's actual venue
 
 ---
 
