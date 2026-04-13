@@ -82,7 +82,7 @@ unvalidated against a second data point. Revisit at end of RBC Heritage.
 
 ## Quick Wins / To-Do
 
-- [ ] **[P3] Market-aware dead-heat exemptions** — BetMGM and Pinnacle pay ties in full on placement markets (T5/T10/T20) but still apply dead-heat to 3-balls. `NO_DEADHEAT_BOOKS` config needs to become market-type-aware so the edge calculator doesn't penalize these books on placements. Could surface currently-hidden edges. Best P3 item for a single session.
+- [x] **[P3] Market-aware dead-heat exemptions** — shipped 2026-04-13 (`cdfe66e`). Replaced flat `NO_DEADHEAT_BOOKS` with `NO_DEADHEAT_BOOKS_BY_MARKET`. Added BetMGM, Pinnacle, ProphetX to the placement-market exempt set (book_rules says they all pay ties in full but code was still haircutting them). On a T20 5% raw edge that's a 3.8pp restoration, which flips those candidates from "suppressed below threshold" to "surface as real edges."
 - [ ] **[P3] Arb legs as placeable candidates** — Log each arb leg as a candidate bet when detected so they're selectable via `/place` like regular candidates. Currently arbs are display-only in scan output.
 - [ ] **[P3] NoVig integration** — see section 3a below. Blocked on user requesting OAuth credentials from NoVig.
 - [ ] **[P4] Expand course profiles** — Only 8 of ~40+ PGA Tour venues have profiles. Build profiles for upcoming tournament venues using Betsperts course stats pages. Improves course-fit signal quality for data collection phase. Steady background work; not urgent mid-season.
