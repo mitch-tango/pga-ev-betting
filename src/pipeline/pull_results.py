@@ -44,12 +44,18 @@ def _name_similarity(a: str, b: str) -> float:
         if SequenceMatcher(None, la, lb).ratio() < 0.85:
             return 0.0
 
-    # First name: handle initials
+    # First name: handle initials and nicknames
     if fa and fb:
         if fa == fb:
             return 1.0
         if fa[0] == fb[0] and (len(fa) <= 2 or len(fb) <= 2):
             return 0.9
+        # Nickname / full-name prefix: "Cam" ↔ "Cameron", "Nick" ↔ "Nicholas".
+        # Require at least 3 chars of agreement so we don't swallow arbitrary
+        # unrelated first-name pairs with the same last name.
+        short, long_ = (fa, fb) if len(fa) <= len(fb) else (fb, fa)
+        if len(short) >= 3 and long_.startswith(short):
+            return 0.92
         return 0.6 * SequenceMatcher(None, la, lb).ratio() + 0.4 * SequenceMatcher(None, fa, fb).ratio()
 
     return 0.8  # Last name match, one first name missing
@@ -99,9 +105,21 @@ def fetch_results(tour: str = "pga") -> dict:
         pos_str = ""
         status = (p.get("status") or "active").lower()
 
-        if status in ("cut", "mdf"):
+        if status == "cut":
             pos_str = "MC"
-            status = "cut"
+        elif status == "mdf":
+            # MDF = Made Friday cut, eliminated on weekend secondary cut.
+            # make_cut bets WIN (player cleared the Friday line); placement
+            # bets LOSE (MDF finish is always bottom of the field). Preserve
+            # the numeric position if DG recorded one so matchup settlement
+            # can still resolve against an active or cut opponent.
+            pos_str = "MDF"
+            if raw_pos is not None:
+                try:
+                    pos = int(str(raw_pos).lstrip("T"))
+                    pos_str = str(raw_pos)
+                except (ValueError, TypeError):
+                    pass
         elif status in ("wd",):
             pos_str = "WD"
         elif status in ("dq",):
@@ -173,6 +191,10 @@ def fetch_archived_results(event_id: str | int, year: int,
         if up in ("CUT", "MC"):
             pos_str = "MC"
             status = "cut"
+        elif up == "MDF":
+            # See fetch_results() — MDF is distinct from cut.
+            pos_str = "MDF"
+            status = "mdf"
         elif up == "WD":
             pos_str = "WD"
             status = "wd"

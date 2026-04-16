@@ -2625,6 +2625,20 @@ def _auto_settle_placement(bet, pr, results):
                 "payout": 0.0, "pnl": round(-bet["stake"], 2),
                 "actual_finish": "MC"}
 
+    if status == "mdf":
+        # Made Friday cut, eliminated on weekend. make_cut wins; all
+        # placement markets lose (MDF finishes are always outside the
+        # top 20/10/5 and certainly not a win).
+        if market == "make_cut":
+            payout = bet["stake"] * bet["odds_at_bet_decimal"]
+            return {"outcome": "win", "settlement_rule": "made_cut_mdf",
+                    "payout": round(payout, 2),
+                    "pnl": round(payout - bet["stake"], 2),
+                    "actual_finish": pos_str}
+        return {"outcome": "loss", "settlement_rule": "mdf_outside_placement",
+                "payout": 0.0, "pnl": round(-bet["stake"], 2),
+                "actual_finish": pos_str}
+
     if pos is None:
         return None
 
@@ -2710,6 +2724,27 @@ def _auto_settle_matchup(bet, pr, or_):
                 "payout": round(payout, 2),
                 "pnl": round(payout - bet["stake"], 2),
                 "actual_finish": pr["pos_str"], "opponent_finish": "MC"}
+
+    # MDF handling — MDF players made Friday's cut but were eliminated on
+    # the weekend secondary cut. They finish at the bottom of the field
+    # (T60+), so vs any active finisher they lose; vs a cut player they
+    # win; vs another MDF they push.
+    p_mdf = pr["status"] == "mdf"
+    o_mdf = or_["status"] == "mdf"
+    if p_mdf or o_mdf:
+        if p_mdf and o_mdf:
+            return {"outcome": "push", "settlement_rule": "both_mdf",
+                    "payout": round(bet["stake"], 2), "pnl": 0.0,
+                    "actual_finish": pr["pos_str"], "opponent_finish": or_["pos_str"]}
+        if p_mdf:
+            return {"outcome": "loss", "settlement_rule": "mdf_vs_active",
+                    "payout": 0.0, "pnl": round(-bet["stake"], 2),
+                    "actual_finish": pr["pos_str"], "opponent_finish": or_["pos_str"]}
+        payout = bet["stake"] * bet["odds_at_bet_decimal"]
+        return {"outcome": "win", "settlement_rule": "opponent_mdf",
+                "payout": round(payout, 2),
+                "pnl": round(payout - bet["stake"], 2),
+                "actual_finish": pr["pos_str"], "opponent_finish": or_["pos_str"]}
 
     p_pos = pr["pos"] if pr["status"] == "active" else None
     o_pos = or_["pos"] if or_["status"] == "active" else None

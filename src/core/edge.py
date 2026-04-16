@@ -219,11 +219,14 @@ def calculate_placement_edges(
     if exchange_only:
         books_in_data = books_in_data & config.EXCHANGE_BOOKS
 
-    # For make_cut, compute event-specific expected outcomes from DG model
-    # rather than hardcoding 65 (which assumes standard PGA 156-player fields).
-    # The Masters, for example, has ~91 players with a top-50+ties cut.
-    if market_type == "make_cut":
-        dg_mc_sum = 0.0
+    # Event-specific expected outcomes from DG model. Hardcoded 5/10/20
+    # only works if DG returns the full field; when DG returns a partial
+    # list (e.g. top 80 of 156) the expected count must be derived from
+    # the present players' DG probabilities so devig_independent scales
+    # correctly. This matches the treatment that make_cut already uses.
+    dg_prob_sum = None
+    if market_type in ("t5", "t10", "t20", "make_cut"):
+        dg_prob_sum = 0.0
         for player in outrights_data:
             dg_data = player.get("datagolf", {})
             if isinstance(dg_data, dict):
@@ -233,9 +236,9 @@ def calculate_placement_edges(
                 dg_odds_str = str(dg_data or "")
             dg_p = parse_american_odds(dg_odds_str)
             if dg_p is not None and dg_p > 0:
-                dg_mc_sum += dg_p
-        mc_expected = dg_mc_sum if dg_mc_sum > 0 else 65
-        logger.info("make_cut expected_outcomes: %.1f (DG model sum)", mc_expected)
+                dg_prob_sum += dg_p
+        logger.info("%s expected_outcomes: %.1f (DG model sum over %d players)",
+                    market_type, dg_prob_sum, len(outrights_data))
 
     # Step 2: De-vig each book's full field
     book_devigged = {}
@@ -251,10 +254,17 @@ def calculate_placement_edges(
             if market_type == "win":
                 devigged = power_devig(raw_probs)
             else:
-                # Placement markets: use independent de-vig
-                expected = {"t5": 5, "t10": 10, "t20": 20}.get(market_type, 20)
-                if market_type == "make_cut":
-                    expected = mc_expected
+                # Placement markets: use independent de-vig. Expected count
+                # is the sum of DG model probabilities over the *present*
+                # players, so devig still calibrates when DG returns a
+                # partial list. Falls back to the static target only if
+                # the DG sum is unusable.
+                static_target = {"t5": 5, "t10": 10, "t20": 20,
+                                 "make_cut": 65}.get(market_type, 20)
+                if dg_prob_sum and dg_prob_sum > 0:
+                    expected = dg_prob_sum
+                else:
+                    expected = static_target
                 devigged = devig_independent(raw_probs, expected, len(raw_probs))
             book_devigged[book] = devigged
 
@@ -561,17 +571,22 @@ def calculate_matchup_edges(
             best_decimal = 0
 
             for book_name, book_data in all_book_odds.items():
-                book_prob = book_data[prob_key]
+                book_prob = book_data[prob_key]      # de-vigged fair (for reference)
                 decimal_odds = book_data[odds_key]
 
                 if book_prob is None or book_prob <= 0 or decimal_odds is None:
                     continue
+                if decimal_odds <= 1:
+                    continue
 
-                edge = your_prob - book_prob
+                # Edge is computed against the actual price paid, not the
+                # de-vigged fair. Matches the placement-markets path.
+                actual_implied = 1.0 / decimal_odds
+                edge = your_prob - actual_implied
                 if edge > best_edge:
                     best_edge = edge
                     best_book = book_name
-                    best_book_prob = book_prob
+                    best_book_prob = actual_implied
                     best_decimal = decimal_odds
 
             if best_edge < effective_floor or best_decimal is None or best_decimal <= 1:
@@ -719,18 +734,37 @@ def calculate_3ball_edges(
             best_book_prob = 0
             best_decimal = 0
 
+            best_dh_adj = 0.0
+            best_raw_edge = 0.0
             for book_name, book_data in all_book_data.items():
                 bp = book_data["fair"][idx]
                 dec = book_data["decimal"][idx]
                 if bp is None or bp <= 0 or dec is None or dec <= 1:
                     continue
 
-                edge = your_prob - bp
-                if edge > best_edge:
-                    best_edge = edge
+                # Edge is computed against the actual price paid, not the
+                # de-vigged fair. Matches the placement-markets path.
+                actual_implied = 1.0 / dec
+                raw_edge = your_prob - actual_implied
+
+                # Per-book dead-heat adjustment. 3-ball ties share the pot
+                # at most books (1/2 or 1/3 stake paid out). Books with
+                # full-pay tie rules are configured in config.NO_DEADHEAT_BOOKS_BY_MARKET.
+                exempt = config.NO_DEADHEAT_BOOKS_BY_MARKET.get("3_ball", set())
+                if book_name in exempt:
+                    adj_edge = raw_edge
+                    dh_adj = 0.0
+                else:
+                    adj_edge, dh_adj = adjust_edge_for_deadheat(
+                        raw_edge, "3_ball", dec)
+
+                if adj_edge > best_edge:
+                    best_edge = adj_edge
                     best_book = book_name
-                    best_book_prob = bp
+                    best_book_prob = actual_implied
                     best_decimal = dec
+                    best_raw_edge = raw_edge
+                    best_dh_adj = dh_adj
 
             if best_edge < effective_floor:
                 continue
@@ -767,8 +801,8 @@ def calculate_3ball_edges(
                 best_odds_decimal=round(best_decimal, 4),
                 best_odds_american=decimal_to_american(best_decimal),
                 best_implied_prob=round(best_book_prob, 4),
-                raw_edge=round(best_edge, 4),
-                deadheat_adj=0.0,
+                raw_edge=round(best_raw_edge, 4),
+                deadheat_adj=round(best_dh_adj, 4),
                 edge=round(best_edge, 4),
                 kelly_fraction=round(best_edge / (best_decimal - 1), 4)
                     if best_decimal > 1 else None,
