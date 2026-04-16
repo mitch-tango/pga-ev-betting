@@ -2738,11 +2738,24 @@ def _auto_settle_matchup(bet, pr, or_):
     # MDF handling — MDF players made Friday's cut but were eliminated on
     # the weekend secondary cut. They finish at the bottom of the field
     # (T60+), so vs any active finisher they lose; vs a cut player they
-    # win; vs another MDF they push.
+    # win; vs another MDF they compare positions.
     p_mdf = pr["status"] == "mdf"
     o_mdf = or_["status"] == "mdf"
     if p_mdf or o_mdf:
         if p_mdf and o_mdf:
+            p_pos_mdf = pr.get("pos")
+            o_pos_mdf = or_.get("pos")
+            if p_pos_mdf is not None and o_pos_mdf is not None and p_pos_mdf != o_pos_mdf:
+                if p_pos_mdf < o_pos_mdf:
+                    payout = bet["stake"] * bet["odds_at_bet_decimal"]
+                    return {"outcome": "win", "settlement_rule": "both_mdf_pos",
+                            "payout": round(payout, 2),
+                            "pnl": round(payout - bet["stake"], 2),
+                            "actual_finish": pr["pos_str"], "opponent_finish": or_["pos_str"]}
+                else:
+                    return {"outcome": "loss", "settlement_rule": "both_mdf_pos",
+                            "payout": 0.0, "pnl": round(-bet["stake"], 2),
+                            "actual_finish": pr["pos_str"], "opponent_finish": or_["pos_str"]}
             return {"outcome": "push", "settlement_rule": "both_mdf",
                     "payout": round(bet["stake"], 2), "pnl": 0.0,
                     "actual_finish": pr["pos_str"], "opponent_finish": or_["pos_str"]}

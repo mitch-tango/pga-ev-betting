@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 
 """
 Live edge detection — combines DG live predictions with current book odds.
@@ -376,7 +377,6 @@ def pull_live_edges(
             from src.core.expert_picks import enrich_candidates_from_cache
             enrich_candidates_from_cache(all_candidates, tournament_name)
         except Exception as e:
-            import logging
             logging.getLogger(__name__).warning(
                 "Expert-pick enrichment failed: %s", e)
         resolve_candidates(all_candidates, source="datagolf")

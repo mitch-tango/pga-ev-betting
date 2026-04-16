@@ -261,7 +261,7 @@ def calculate_placement_edges(
                 # the DG sum is unusable.
                 static_target = {"t5": 5, "t10": 10, "t20": 20,
                                  "make_cut": 65}.get(market_type, 20)
-                if dg_prob_sum and dg_prob_sum > 0:
+                if dg_prob_sum is not None and dg_prob_sum > 0:
                     expected = dg_prob_sum
                 else:
                     expected = static_target

@@ -289,8 +289,11 @@ def enrich_candidates_with_expert_picks(
     expert_signals: dict[str, dict],
 ) -> None:
     """Set expert pick fields on CandidateBet objects (mutates in place)."""
+    normalized = {k.strip().lower(): v for k, v in expert_signals.items()}
     for c in candidates:
         sig = expert_signals.get(c.player_name)
+        if not sig:
+            sig = normalized.get(c.player_name.strip().lower())
         if not sig:
             continue
         c.expert_signal = sig["signal"]

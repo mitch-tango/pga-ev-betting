@@ -74,7 +74,7 @@ def fetch_results(tour: str = "pga") -> dict:
                     "dg_id": str,
                     "pos": int | None,
                     "pos_str": str (e.g. "T3", "1", "MC"),
-                    "status": str ("active"|"cut"|"wd"|"dq"),
+                    "status": str ("active"|"cut"|"mdf"|"wd"|"dq"),
                     "r1": int|None, "r2": int|None, "r3": int|None, "r4": int|None,
                     "total": int|None,
                 },

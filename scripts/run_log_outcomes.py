@@ -72,6 +72,17 @@ def _settle_placement_auto(bet: dict, player_result: dict) -> dict | None:
             "actual_finish": "MC",
         }
 
+    if status == "mdf":
+        if market == "make_cut":
+            payout = bet["stake"] * bet["odds_at_bet_decimal"]
+            return {"outcome": "win", "settlement_rule": "made_cut_mdf",
+                    "payout": round(payout, 2),
+                    "pnl": round(payout - bet["stake"], 2),
+                    "actual_finish": pos_str}
+        return {"outcome": "loss", "settlement_rule": "mdf_outside_placement",
+                "payout": 0.0, "pnl": round(-bet["stake"], 2),
+                "actual_finish": pos_str}
+
     if pos is None:
         return None  # Can't determine finish
 
@@ -108,8 +119,8 @@ def _settle_placement_auto(bet: dict, player_result: dict) -> dict | None:
 
 def _settle_matchup_auto(bet: dict, p_result: dict, o_result: dict) -> dict | None:
     """Auto-settle a matchup bet from DG results."""
-    p_pos = p_result["pos"] if p_result["status"] == "active" else None
-    o_pos = o_result["pos"] if o_result["status"] == "active" else None
+    p_pos = p_result["pos"] if p_result["status"] in ("active", "mdf") else None
+    o_pos = o_result["pos"] if o_result["status"] in ("active", "mdf") else None
 
     rule = db.get_book_rule(bet["book"], bet["market_type"])
     tie_rule = rule.get("tie_rule", "push") if rule else "push"
@@ -152,6 +163,45 @@ def _settle_matchup_auto(bet: dict, p_result: dict, o_result: dict) -> dict | No
                     }
 
         # Fall through to tournament position comparison if round scores unavailable
+
+    # MDF handling — MDF players made Friday's cut but were eliminated on
+    # the weekend secondary cut. They finish at the bottom of the field
+    # (T60+), so vs any active finisher they lose; vs a cut player they
+    # win; vs another MDF they compare positions.
+    p_mdf = p_result["status"] == "mdf"
+    o_mdf = o_result["status"] == "mdf"
+    if p_mdf or o_mdf:
+        if p_mdf and o_mdf:
+            if p_pos is not None and o_pos is not None and p_pos != o_pos:
+                if p_pos < o_pos:
+                    payout = bet["stake"] * bet["odds_at_bet_decimal"]
+                    return {"outcome": "win", "settlement_rule": "both_mdf_pos",
+                            "payout": round(payout, 2),
+                            "pnl": round(payout - bet["stake"], 2),
+                            "actual_finish": p_result["pos_str"],
+                            "opponent_finish": o_result["pos_str"]}
+                else:
+                    return {"outcome": "loss", "settlement_rule": "both_mdf_pos",
+                            "payout": 0.0, "pnl": round(-bet["stake"], 2),
+                            "actual_finish": p_result["pos_str"],
+                            "opponent_finish": o_result["pos_str"]}
+            return {"outcome": "push", "settlement_rule": "both_mdf",
+                    "payout": round(bet["stake"], 2), "pnl": 0.0,
+                    "actual_finish": p_result["pos_str"],
+                    "opponent_finish": o_result["pos_str"]}
+        if p_mdf:
+            # MDF loses to any active finisher (they're at the bottom)
+            return {"outcome": "loss", "settlement_rule": "mdf_vs_active",
+                    "payout": 0.0, "pnl": round(-bet["stake"], 2),
+                    "actual_finish": p_result["pos_str"],
+                    "opponent_finish": o_result["pos_str"]}
+        # Opponent is MDF, our player is active — we win
+        payout = bet["stake"] * bet["odds_at_bet_decimal"]
+        return {"outcome": "win", "settlement_rule": "opponent_mdf",
+                "payout": round(payout, 2),
+                "pnl": round(payout - bet["stake"], 2),
+                "actual_finish": p_result["pos_str"],
+                "opponent_finish": o_result["pos_str"]}
 
     result = settle_matchup_bet(
         p_pos, o_pos, bet["stake"], bet["odds_at_bet_decimal"],

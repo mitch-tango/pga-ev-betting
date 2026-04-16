@@ -236,6 +236,7 @@ CORRELATION_HAIRCUT = [1.0, 0.5, 0.25, 0.125]
 DEADHEAT_AVG_REDUCTION = {
     "t10": 0.044,   # ~4.4%
     "t20": 0.038,   # ~3.8%
+    "3_ball": 0.025, # ~2.5% — ties split pot (1/2 or 1/3); tune from actuals
 }
 
 # Books exempt from dead-heat adjustment, per market type.
