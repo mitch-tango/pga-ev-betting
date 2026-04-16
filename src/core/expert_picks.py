@@ -298,6 +298,52 @@ def enrich_candidates_with_expert_picks(
         c.expert_pick_count = sig["pick_count"]
 
 
+def load_cached_expert_signals(
+    tournament_name: str | None,
+    tournament_slug: str | None = None,
+) -> dict[str, dict]:
+    """Load pre-extracted expert signals for a tournament.
+
+    Signals are generated offline (see `scripts/ingest_oad_experts.py`) and
+    saved to `data/raw/{slug}/expert_signals.json`. Scan paths call this
+    helper on the hot path — no LLM call, just a JSON read.
+
+    Returns {} if nothing cached or tournament identifier missing.
+    """
+    import json
+    from pathlib import Path
+
+    slug = tournament_slug
+    if not slug and tournament_name:
+        slug = tournament_name.lower().replace(" ", "-")
+    if not slug:
+        return {}
+
+    path = Path("data/raw") / slug / "expert_signals.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception as e:
+        logger.warning("Failed to load cached expert signals from %s: %s", path, e)
+        return {}
+
+
+def enrich_candidates_from_cache(
+    candidates: list,
+    tournament_name: str | None,
+    tournament_slug: str | None = None,
+) -> int:
+    """Load cached expert signals and enrich candidates. Returns enriched count."""
+    if not candidates:
+        return 0
+    signals = load_cached_expert_signals(tournament_name, tournament_slug)
+    if not signals:
+        return 0
+    enrich_candidates_with_expert_picks(candidates, signals)
+    return sum(1 for c in candidates if c.expert_signal)
+
+
 # ── Display ───────────────────────────────────────────────────────
 
 SIGNAL_LABELS = {

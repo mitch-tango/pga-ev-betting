@@ -1601,6 +1601,11 @@ def _run_pretournament_scan(tour: str):
     all_candidates.sort(key=lambda c: c.edge, reverse=True)
 
     if all_candidates:
+        try:
+            from src.core.expert_picks import enrich_candidates_from_cache
+            enrich_candidates_from_cache(all_candidates, tournament_name)
+        except Exception as e:
+            log.warning("Expert-pick enrichment failed: %s", e)
         resolve_candidates(all_candidates, source="datagolf")
         db.persist_candidates(all_candidates, tournament_id, "pretournament")
 
@@ -1813,6 +1818,11 @@ def _run_preround_scan(tour: str, round_number: int | None):
     all_candidates.sort(key=lambda c: c.edge, reverse=True)
 
     if all_candidates:
+        try:
+            from src.core.expert_picks import enrich_candidates_from_cache
+            enrich_candidates_from_cache(all_candidates, tournament_name)
+        except Exception as e:
+            log.warning("Expert-pick enrichment failed: %s", e)
         resolve_candidates(all_candidates, source="datagolf")
         db.persist_candidates(all_candidates, tournament_id, "preround")
 

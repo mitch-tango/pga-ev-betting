@@ -413,6 +413,24 @@ def main():
 
     all_candidates.sort(key=lambda c: c.edge, reverse=True)
 
+    # Enrich with cached expert-pick signals (if present)
+    if all_candidates:
+        try:
+            from src.core.expert_picks import enrich_candidates_from_cache
+            ep_name = None
+            if tournament_id:
+                trec = db.get_tournament_by_id(tournament_id)
+                if trec:
+                    ep_name = trec.get("tournament_name")
+            enriched = enrich_candidates_from_cache(
+                all_candidates, ep_name, args.tournament,
+            )
+            if enriched:
+                print(f"  Expert picks: {enriched}/{len(all_candidates)} "
+                      f"candidates enriched")
+        except Exception as e:
+            print(f"  Warning: Expert-pick enrichment failed ({e})")
+
     # Resolve player names to canonical IDs
     if all_candidates:
         print("\nResolving player names...")

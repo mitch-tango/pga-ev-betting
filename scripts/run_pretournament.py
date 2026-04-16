@@ -590,6 +590,20 @@ def main():
         except Exception as e:
             print(f"  Warning: Course-fit enrichment failed ({e})")
 
+    # Enrich with cached expert-pick signals (generated offline via
+    # scripts/ingest_oad_experts.py — no LLM call on the hot path).
+    if all_candidates:
+        try:
+            from src.core.expert_picks import enrich_candidates_from_cache
+            enriched = enrich_candidates_from_cache(
+                all_candidates, tournament_name, tournament_slug,
+            )
+            if enriched:
+                print(f"  Expert picks: {enriched}/{len(all_candidates)} "
+                      f"candidates enriched")
+        except Exception as e:
+            print(f"  Warning: Expert-pick enrichment failed ({e})")
+
     # Resolve player names to canonical IDs (builds alias table over time)
     if all_candidates:
         print("\nResolving player names...")

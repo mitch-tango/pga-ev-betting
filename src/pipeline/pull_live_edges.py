@@ -372,6 +372,13 @@ def pull_live_edges(
     all_candidates.sort(key=lambda c: c.edge, reverse=True)
 
     if all_candidates:
+        try:
+            from src.core.expert_picks import enrich_candidates_from_cache
+            enrich_candidates_from_cache(all_candidates, tournament_name)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Expert-pick enrichment failed: %s", e)
         resolve_candidates(all_candidates, source="datagolf")
 
     stats["total_candidates"] = len(all_candidates)
